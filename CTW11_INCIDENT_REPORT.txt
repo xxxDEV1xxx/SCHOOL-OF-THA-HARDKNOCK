@@ -1,0 +1,256 @@
+==============================================================================
+FORMAL INCIDENT REPORT
+UNAUTHORIZED CELLULAR TRANSMISSION / CELL-SITE SIMULATOR ACTIVITY
+==============================================================================
+
+Report Generated:    2026-04-01 22:33:53 UTC
+Report Date:         April 01, 2026
+Reporting Party:     Christopher Thomas Williams
+Analyzer Version:    CTW-11 SENTINEL Cell Analyzer v3.0
+Classification:      UNCLASSIFIED // LAW ENFORCEMENT SENSITIVE
+
+------------------------------------------------------------------------------
+EXECUTIVE SUMMARY
+------------------------------------------------------------------------------
+
+This report documents 2 distinct anomalous
+cellular transmission finding(s) identified through passive RF
+monitoring at the location specified below. The findings are
+consistent with the operation of one or more unauthorized
+cell-site simulator(s) (commonly known as "IMSI catchers" or
+"Stingray" devices) in the vicinity of the complainant's
+residence.
+
+Findings by severity:
+  HIGH: 2
+
+------------------------------------------------------------------------------
+LOCATION AND COLLECTION PARAMETERS
+------------------------------------------------------------------------------
+
+GPS Coordinates:     33.800464, -117.220386
+GPS Accuracy:        9.976376 meters
+Altitude:            415.30615234375 meters MSL
+GPS Timestamp:       2026-03-31T16:43:15Z
+Municipality:        Perris, California (Riverside County)
+Collection Method:   Passive downlink monitoring (no transmission)
+Equipment:           CellMapper A5.6.5 on HMD N159V (Android 14)
+Device ID:           HMD|N159V|14|UKQ1.231025.001</b><br><br><br><br><b>GPS</b><br><br>GPS:
+
+------------------------------------------------------------------------------
+EVIDENCE FILES AND INTEGRITY
+------------------------------------------------------------------------------
+
+SHA-256 (debug.html):
+  921753295cce76c251d70e8a836233cdd3c09ec55353142b9842c56342d703d7
+SHA-256 (csv):
+  921753295cce76c251d70e8a836233cdd3c09ec55353142b9842c56342d703d7
+
+------------------------------------------------------------------------------
+CELLULAR ENVIRONMENT SUMMARY
+------------------------------------------------------------------------------
+
+Total cell observations:  101
+Unique cells (EARFCN/PCI): 12
+EARFCNs observed:     [1000, 5230, 66586]
+PCIs observed:        [47, 111, 112, 240, 242, 329, 392]
+eNB IDs observed:     [44131, 44221]
+PLMNs observed:       ['311/480']
+
+Cells visible to device at time of debug capture:
+
+  Cell 0: PCI=242 EARFCN=66586 Band=66 MCC=311 MNC=480 [REGISTERED]
+          RSRP=-108 RSRQ=-15 TA=10
+          ECI=11297568 eNB=44131 LCID=32
+
+  Cell 1: PCI=111 EARFCN=66586 Band=66 MCC=None MNC=None [neighbor]
+          RSRP=-109 RSRQ=-19 TA=None
+          *** NULL PLMN â€” PHANTOM CELL ***
+
+  Cell 2: PCI=329 EARFCN=66586 Band=66 MCC=None MNC=None [neighbor]
+          RSRP=-113 RSRQ=-19 TA=None
+          *** NULL PLMN â€” PHANTOM CELL ***
+
+  Cell 3: PCI=242 EARFCN=1000 Band=2 MCC=None MNC=None [neighbor]
+          RSRP=-102 RSRQ=-12 TA=None
+          *** NULL PLMN â€” PHANTOM CELL ***
+
+  Cell 4: PCI=240 EARFCN=1000 Band=2 MCC=None MNC=None [neighbor]
+          RSRP=-106 RSRQ=-16 TA=None
+          *** NULL PLMN â€” PHANTOM CELL ***
+
+  Cell 5: PCI=111 EARFCN=1000 Band=2 MCC=None MNC=None [neighbor]
+          RSRP=-107 RSRQ=-18 TA=None
+          *** NULL PLMN â€” PHANTOM CELL ***
+
+  Cell 6: PCI=112 EARFCN=1000 Band=2 MCC=None MNC=None [neighbor]
+          RSRP=-104 RSRQ=-17 TA=None
+          *** NULL PLMN â€” PHANTOM CELL ***
+
+  Cell 7: PCI=242 EARFCN=66586 Band=66 MCC=311 MNC=480 [REGISTERED]
+          RSRP=-107 RSRQ=-16 TA=None
+          ECI=11297568 eNB=44131 LCID=32
+
+  Cell 8: PCI=111 EARFCN=66586 Band=66 MCC=None MNC=None [neighbor]
+          RSRP=-107 RSRQ=-16 TA=None
+          *** NULL PLMN â€” PHANTOM CELL ***
+
+  Cell 9: PCI=392 EARFCN=66586 Band=66 MCC=None MNC=None [neighbor]
+          RSRP=-107 RSRQ=-16 TA=None
+          *** NULL PLMN â€” PHANTOM CELL ***
+
+  Cell 10: PCI=47 EARFCN=66586 Band=66 MCC=None MNC=None [neighbor]
+          RSRP=-107 RSRQ=-16 TA=None
+          *** NULL PLMN â€” PHANTOM CELL ***
+
+  Cell 11: PCI=242 EARFCN=1000 Band=2 MCC=None MNC=None [neighbor]
+          RSRP=-107 RSRQ=-16 TA=None
+          *** NULL PLMN â€” PHANTOM CELL ***
+
+  Cell 12: PCI=240 EARFCN=1000 Band=2 MCC=None MNC=None [neighbor]
+          RSRP=-104 RSRQ=-14 TA=10
+          *** NULL PLMN â€” PHANTOM CELL ***
+
+  Cell 13: PCI=111 EARFCN=1000 Band=2 MCC=None MNC=None [neighbor]
+          RSRP=-108 RSRQ=-16 TA=None
+          *** NULL PLMN â€” PHANTOM CELL ***
+
+  Cell 14: PCI=329 EARFCN=1000 Band=2 MCC=None MNC=None [neighbor]
+          RSRP=-110 RSRQ=-19 TA=None
+          *** NULL PLMN â€” PHANTOM CELL ***
+
+------------------------------------------------------------------------------
+ANOMALY FINDINGS
+------------------------------------------------------------------------------
+
+FINDING 1: [HIGH] GSM_STACK_ACTIVE
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+  Android RIL reports isGsm()=true on at least one radio interface. This
+  indicates the device's baseband is recognizing a GSM network, which should
+  not exist in US airspace. Combined with LTE primary registration, this
+  suggests a multi-RAT attack attempting GSM downgrade on a secondary radio
+  path.
+
+  Evidence:
+    is_gsm_flags: ["true", "true"]
+
+  Applicable Statutes:
+    - 18 U.S.C. Â§ 2511 â€” Interception of communications
+    - 18 U.S.C. Â§ 1030 â€” Computer fraud (baseband manipulation)
+
+FINDING 2: [HIGH] PHANTOM_CELLS
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+  9 unique cell(s) detected broadcasting PCI and EARFCN but withholding
+  MCC/MNC identity. Legitimate cells always broadcast their PLMN identity in
+  SIB1. A cell that withholds PLMN identity while being visible to the
+  device's radio is consistent with a cell-site simulator in passive
+  monitoring mode or initial beacon phase.
+
+  Evidence:
+    phantom_count: 9
+    phantoms: [{"earfcn": 66586, "pci": 111, "rsrp": -109, "bands": "66"}, {"earfcn": 66586, "pci": 329, "rsrp": -113, "bands": "66"}, {"earfcn": 1000, "pci": 242, "rsrp": -102, "bands": "2"}, {"earfcn": 1000, "pci": 240, "rsrp": -106, "bands": "2"}, {"earfcn": 1000, "pci": 111, "rsrp": -107, "bands": "2"}, {"earfcn": 1000, "pci": 112, "rsrp": -104, "bands": "2"}, {"earfcn": 66586, "pci": 392, "rsrp": -107, "bands": "66"}, {"earfcn": 66586, "pci": 47, "rsrp": -107, "bands": "66"}, {"earfcn": 1000, "pci": 329, "rsrp": -110, "bands": "2"}]
+
+  Applicable Statutes:
+    - 47 U.S.C. Â§ 333 â€” Willful interference
+    - 18 U.S.C. Â§ 2512 â€” Interception device manufacture/possession
+
+------------------------------------------------------------------------------
+LEGAL FRAMEWORK
+------------------------------------------------------------------------------
+
+The following federal and state statutes are applicable to the
+unauthorized operation of cell-site simulators and the interception
+of cellular communications:
+
+FEDERAL:
+  47 U.S.C. Â§ 333 â€” Willful or malicious interference with any
+    radio communication authorized by the FCC. Carries penalties
+    up to $100,000 per violation and imprisonment up to one year.
+
+  47 U.S.C. Â§ 302a â€” Unlawful to manufacture, import, sell, or
+    operate devices that do not comply with FCC regulations.
+
+  18 U.S.C. Â§ 2511 â€” Illegal interception of wire, oral, or
+    electronic communications. Felony with penalties up to five
+    years imprisonment per count.
+
+  18 U.S.C. Â§ 2512 â€” Manufacture, distribution, possession, and
+    advertising of wire, oral, or electronic communication
+    intercepting devices. Felony with penalties up to five years.
+
+  18 U.S.C. Â§ 1029 â€” Fraud and related activity in connection
+    with access devices (including IMSI/IMEI capture).
+
+  18 U.S.C. Â§ 1030 â€” Computer Fraud and Abuse Act (unauthorized
+    access to device baseband processor constitutes unauthorized
+    access to a protected computer).
+
+  18 U.S.C. Â§ 242 â€” Deprivation of rights under color of law
+    (applicable if law enforcement operates without warrant).
+
+STATE (CALIFORNIA):
+  Cal. Penal Code Â§ 629.50-629.98 â€” California Electronic
+    Communications Privacy Act (CalECPA). Requires warrant for
+    use of cell-site simulators by law enforcement.
+
+  Cal. Gov. Code Â§ 53166 â€” Requires local law enforcement to
+    obtain approval before acquiring cell-site simulator
+    technology and mandates public disclosure.
+
+------------------------------------------------------------------------------
+FILING RECOMMENDATIONS
+------------------------------------------------------------------------------
+
+Based on the findings documented herein, the following filings
+are recommended:
+
+1. FCC ENFORCEMENT BUREAU
+   File via: https://consumercomplaints.fcc.gov/
+   Category: Interference / Unauthorized Operation
+   Reference: 47 U.S.C. Â§Â§ 302a, 333
+   Attach: This report, debug.html, CSV data
+
+2. FBI FIELD OFFICE (Los Angeles / Riverside)
+   File via: https://tips.fbi.gov/ or local field office
+   Category: Electronic surveillance / Wiretapping
+   Reference: 18 U.S.C. Â§Â§ 2511, 2512, 1029
+   Note: Request IC3 referral if cyber nexus identified
+
+3. DOJ CIVIL RIGHTS DIVISION
+   If evidence suggests government operation without warrant:
+   Reference: 18 U.S.C. Â§ 242, 42 U.S.C. Â§ 1985(3)
+
+4. CALIFORNIA ATTORNEY GENERAL
+   File via: https://oag.ca.gov/contact/consumer-complaint-against-business-or-company
+   Reference: Cal. Penal Code Â§ 629.50, Cal. Gov. Code Â§ 53166
+
+5. RIVERSIDE COUNTY DISTRICT ATTORNEY
+   Public Integrity Unit
+   Reference: Cal. Penal Code Â§ 629.50 et seq.
+
+------------------------------------------------------------------------------
+DECLARATION
+------------------------------------------------------------------------------
+
+I, Christopher Thomas Williams, declare under penalty of perjury
+under the laws of the United States of America and the State of
+California that the foregoing technical analysis is true and
+correct to the best of my knowledge and belief, and that the
+data referenced herein was collected through passive monitoring
+of publicly broadcast radio signals using lawful equipment
+operated in compliance with FCC Part 15 regulations.
+
+Date: April 01, 2026
+
+
+________________________________________
+Christopher Thomas Williams
+Independent Security Researcher
+Perris, California
+
+==============================================================================
+END OF REPORT â€” Generated 2026-04-01 22:33:53 UTC
+CTW-11 SENTINEL Cell Analyzer v3.0
+==============================================================================
