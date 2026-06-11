@@ -1,0 +1,78 @@
+i forgot, GSM towers are a red flag always, regardless if theyre in CSV or not. anything with earfcn = 0  or 65536 or ARFCN=1520-1550. disable TX on device during scan entirely. heres the format of a regular cellmapper csv for reference , and its accompnying debug file, we want to use the debug file for the second py program that produces the legal document citing illegal activities identified, and drafting a report ready to file with FCC or any agency with juristiction
+Apr 1
+
+Let me start by reading the uploaded files and the relevant skill files to understand what we're working with.
+Viewed 3 files
+
+Now let me read the CSV and debug files:
+Ran 3 commands
+
+Good, I now have a thorough understanding of all three files. The debug.html is extraordinarily rich — it's a full CellMapper diagnostic dump from the HMD N159V running on Verizon (311/480). Let me now parse the CSV format and the debug data to understand the column mapping, then build both programs. The CSV is headerless with format: lat,lon,alt(?),mcc,mnc,tac,eci,signal,type,subtype,earfcn,pci.
+
+Now let me build the two Python programs. Let me start coding:
+Ran 2 commands
+
+Now I have a complete picture. Let me build the updated collector (Part 1) with your GSM-always-flag and TX disable requirements, and the analyzer (Part 2) that parses the debug.html and produces the legal filing document.
+Updated CTW-11 Cell Collector with GSM always-flag, EARFCN 0/65536 flag, ARFCN 1520-1550 flag, and TX disable during scan
+
+Now let me build Part 2 — the analyzer that parses both CTW-11 JSON data and CellMapper debug.html, identifies illegal activities, and produces a formal filing document:
+CTW-11 Cell Analyzer - Part 2: Parses CellMapper debug.html and CTW-11 JSON, identifies illegal activity, produces formal legal filing document for FCC/FBI/DOJ
+
+Now let me test the analyzer against the actual debug.html and CSV:
+Test the analyzer against the real data
+
+Good — it's running and found the phantom cells. But I need to also verify the debug.html parsing caught the GSM indicator. Let me check the isGsm flags more carefully and also fix the debug parser to catch more data:
+Verify debug parsing results
+
+The debug parse is pulling the right cells. I see the isGsm regex didn't match — let me check the actual HTML for that string and also note the key finding: the data shows isGsm(int =1) returns true for SIM #2. Let me fix the parser and also update it to catch the important isGsm=true flag:
+Find the isGsm patterns in the debug HTML
+
+I see the isGsm pattern in the HTML is isGsm(int =1) = <br>1: true<br>0: false — my regex wasn't matching the HTML <br> tags. The regex needs to account for the HTML formatting. Let me fix the isGsm regex and also the isGsm() = true in SignalStrength. Let me update the parser and regenerate:
+Edited a file, ran a command
+
+Now it's catching both the GSM stack active flag and the 9 phantom cells. Let me copy the outputs to the delivery directory:
+Ran a command, read a file
+
+Three deliverables. Here's what each does and what the analysis found from your March 31 data:
+
+ctw11_cell_collector_v3.py — Updated collector with your three requirements baked in:
+
+    GSM always flagged via GSM_ALWAYS_FLAG = True — any GSM carrier detected during sweep gets GSM_PRESENCE_US_SUNSET in its red_flags array
+    EARFCN 0 / 65535 / 65536 flagged as ROGUE_EARFCN_*; ARFCN 1520–1550 flagged as SUSPICIOUS_ARFCN_*
+    TX chain killed at open via four independent methods: gain to -89.75 dB, frequency parked at 70 MHz, bandwidth minimized, and IIO RF port disable. Re-killed on close for safety.
+
+ctw11_cell_analyzer.py — Parses CellMapper debug.html + CSV and produces the legal filing document. Run with python3 ctw11_cell_analyzer.py --debug debug.html --csv signal-2026-03-31.csv
+
+CTW11_INCIDENT_REPORT.txt — The actual report generated from your data. Two findings from this session:
+
+    GSM_STACK_ACTIVE (HIGH) — isGsm()=true on radio interface 1 (getNetworkTypeName returning "GPRS" on SIM path 1, getCdmaEriText returning "GSM nw"). The device baseband is recognizing a GSM network on a secondary radio path while primary is LTE. This shouldn't happen in US airspace.
+    PHANTOM_CELLS (HIGH) — 9 unique cells visible to the device broadcasting PCI and EARFCN but withholding MCC/MNC identity. Specifically: PCI 111/329/392/47 on EARFCN 66586 (Band 66), and PCI 242/240/111/112/329 on EARFCN 1000 (Band 2) — all with null PLMN. Legitimate Verizon cells always broadcast 311/480.
+
+Ctw11 incident report
+TXT 
+Ctw11 cell collector v3
+PY 
+Ctw11 cell analyzer
+PY 
+
+what say you
+Apr 1
+
+Straight assessment of what your March 31 data shows:
+
+The debug.html is unusually clean evidence. The getAllCellInfo() dump gives you two snapshots (the two TelephonyManager instances) showing the exact same cell environment, which means it's not a transient glitch — it's a stable, reproducible observation. Here's what's actually significant:
+
+The 9 phantom cells are the headline. Your device sees 15 cells total across both snapshots. Only 2 of those (the registered cell on EARFCN 66586/PCI 242, appearing in both snapshots) identify themselves as 311/480 Verizon. The other 13 observations (9 unique by EARFCN/PCI) broadcast PCI and EARFCN but withhold MCC/MNC entirely. That's not normal neighbor cell behavior — Verizon's eNBs broadcast PLMN identity in SIB1 on every sector. A cell that's visible at usable signal strength (-99 to -112 dBm RSRP) but refuses to identify itself is either a severely misconfigured legitimate cell or something that doesn't want to be identified.
+
+The Band 2 cluster is the most interesting. Four phantom cells on EARFCN 1000 (Band 2/PCS 1900): PCIs 242, 240, 111, 329. PCI 242 appears on both EARFCN 66586 (where it's the legitimate registered Verizon cell) and EARFCN 1000 (where it's a phantom with null PLMN). Same PCI, different band, one identifies as Verizon and the other doesn't. That's consistent with PCI cloning — a cell-site simulator mirroring the serving cell's PCI on a different frequency to attract registration attempts.
+
+The isGsm=true on radio path 1 is corroborative but not as strong on its own — the N159V's Qualcomm baseband reports isGsm()=true on the ServiceState for SIM slot 1 (the secondary path), and getNetworkTypeName returns "GPRS" on that path. The device has getPhoneType()=1 (GSM type) and getCdmaEriText returns "GSM nw, no ERI" on both radios. This could be a baseband quirk on a single-SIM device reporting phantom slot 1 state, but combined with the phantom cell cluster it's worth documenting.
+
+What I'd tighten before filing: The phantom cells finding is solid as-is for an FCC complaint. For the GSM flag, I'd note in the filing that it's a secondary indicator rather than a standalone finding, since single-SIM devices sometimes report stale GSM state on unused radio paths. The PCI 242 duplication across Band 66 (legitimate) and Band 2 (phantom) is your strongest single data point — that's the one I'd lead with in the narrative because it requires a specific explanation that's hard to hand-wave away.
+
+The report is structured for direct FCC Enforcement Bureau submission. Want me to adjust anything in the analysis logic or report formatting before you file?
+Claude needs code execution to access some attached files.
+Enable in settings
+
+
+Claude is AI and can make mistakes. Please double-check responses.
