@@ -1,0 +1,209 @@
+my code is stalling,need to scan for illegal cell tower activity . errors :[WARN] FCC tower database not found: /opt/ctw11/celldb/cell_towers_us.csv
+       Download from opencellid.org and place at that path
+       Collector will run without database cross-reference
+[ERR] Collection error: 'SoapySDRKwargs' object has no attribute 'get'
+Traceback (most recent call last):
+  File "/usr/bin/Ctw11_cell_dof.py", line 1270, in run_collection
+    with PlutoSDRDevice(
+         ~~~~~~~~~~~~~~^
+        uri=args.uri,
+        ^^^^^^^^^^^^^
+        gain=args.gain,
+        ^^^^^^^^^^^^^^^
+        sample_rate=GSM_SAMPLE_RATE
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ) as pluto:
+    ^
+  File "/usr/bin/Ctw11_cell_dof.py", line 350, in __enter__
+    return self.open()
+           ~~~~~~~~~^^
+  File "/usr/bin/Ctw11_cell_dof.py", line 290, in open
+    detected_uri = results[0].get("uri", "unknown")
+                   ^^^^^^^^^^^^^^
+AttributeError: 'SoapySDRKwargs' object has no attribute 'get'
+[CTW11] Session files:
+  Raw:      /opt/ctw11/captures/gsm/cell_20260401_203647_raw.json
+  Towers:   /opt/ctw11/captures/gsm/cell_20260401_203647_towers.csv
+  Anomalies:/opt/ctw11/captures/gsm/cell_20260401_203647_anomalies.json
+  Metadata: /opt/ctw11/captures/gsm/cell_20260401_203647_meta.txt
+============================================================
+ CTW-11 COLLECTION COMPLETE
+ Duration:  2s
+ Scans:     0
+ Anomalies: 0
+============================================================
+Run Part 2 to generate FCC report:
+  python3 ctw11_cell_scanner.py /opt/ctw11/captures/gsm/cell_20260401_203647_anomalies.json
+
+┌──(root㉿kali)-[/bin]
+Apr 1
+Viewed 2 files
+
+Root cause is clear. SoapySDR.Device.enumerate() returns a list of SoapySDRKwargs objects, not dicts. SoapySDRKwargs is a custom map-like type that doesn't have a .get() method — you have to access it with [] notation and handle KeyError, or cast it differently.
+
+Two-line fix in open() at line 290:
+python
+
+# BROKEN — SoapySDRKwargs is not a dict
+detected_uri = results[0].get("uri", "unknown")
+
+# FIXED — use dict() to cast, or key access with fallback
+detected_uri = dict(results[0]).get("uri", "unknown")
+
+Here's the corrected open() method block — drop this in as a replacement:
+python
+
+def open(self):
+    if not SOAPY_OK:
+        raise RuntimeError("SoapySDR not available")
+
+    results = SoapySDR.Device.enumerate("driver=plutosdr")
+    if not results:
+        raise RuntimeError(
+            "No PlutoSDR detected. Check USB OTG connection. "
+            "Run: SoapySDRUtil --find")
+
+    # Cast SoapySDRKwargs → plain dict before calling .get()
+    result_dict = dict(results[0])
+    detected_uri = result_dict.get("uri", "unknown")
+    print(f"[CTW11] PlutoSDR detected at URI: {detected_uri}")
+    self.uri = detected_uri
+
+    self.sdr = SoapySDR.Device(results[0])
+    self.sdr.setSampleRate(SOAPY_SDR_RX, 0, self.sample_rate)
+    self.sdr.setGain(SOAPY_SDR_RX, 0, self.gain)
+    self.sdr.setGainMode(SOAPY_SDR_RX, 0, False)
+    self.sdr.setBandwidth(SOAPY_SDR_RX, 0,
+                          min(self.sample_rate * 0.8, PLUTO_BW_MAX_RX))
+    print(f"[CTW11] PlutoSDR opened: {self.uri}")
+    print(f"        Sample rate: {self.sample_rate/1e6:.3f} MSPS")
+    print(f"        Gain: {self.gain} dB")
+    return self
+
+What changed: Line 290, results[0].get(...) → dict(results[0]).get(...). SoapySDRKwargs supports iteration and key access but not the full dict API. Wrapping it in dict() materializes it as a real Python dict, making .get() available. SoapySDR.Device(results[0]) still receives the original SoapySDRKwargs object, which is what the constructor expects — don't cast that one.
+
+The FCC DB warning is non-blocking — the collector runs fine without it, it just skips the UNREGISTERED_CELL cross-reference checks. To get that working, pull the OpenCellID export (requires free account at opencellid.org), filter for MCC 310–316, and drop it at /opt/ctw11/celldb/cell_towers_us.csv. The FCCTowerDatabase class will pick it up automatically on the next run.
+
+To run code, enable code execution and file creation in Settings > Capabilities.
+
+harden all the code, and give the completed file. cover memory leaks and injection attacks while running
+Apr 1
+Viewed 2 files
+
+Good, I have the full picture now. Let me enumerate every issue before writing the hardened version:
+
+Bugs/crashes: SoapySDRKwargs.get() (the primary crash), unguarded open() file handles in CollectionSession (no try/finally, leak on exception), rx_stream not closed if open() fails mid-way.
+
+Memory leaks: CollectionSession._all_anomalies grows unbounded over long sessions, _towers dict grows unbounded, read_samples buffer allocated every call with no ceiling on num_samples.
+
+Injection attack surfaces: grgsm_decode subprocess args built from decoded RF data (MCC/MNC/freq values), srsran_cell_search same problem, temp file path uses int(time.time()) (predictable, writable /tmp/), CSV/JSON output written with unvalidated RF-sourced strings (CSV injection via =CMD prefix), json.loads on grgsm stdout with no size cap.
+
+Other hardening: no input validation on CLI args before hardware use, subprocess.run without env= (inherits full environment), file handles opened without mode=0o600, no max anomaly list size, FCC DB loaded entirely into RAM with no size check.
+Ran 2 commands, viewed a file, created a file
+
+Here's a full rundown of every change made, grouped by category:
+
+Primary crash fix
+
+SoapySDR.Device.enumerate() returns SoapySDRKwargs objects. These are map-like but don't implement the dict API. The fix is dict(results[0]).get("uri", "unknown") — cast to a real dict before calling .get(). The original SoapySDRKwargs object is still passed unmodified to SoapySDR.Device() because that constructor requires it.
+
+Memory leaks
+
+    _all_anomalies and _towers in CollectionSession now cap at MAX_ANOMALIES (10K) and MAX_TOWERS (50K). Both were previously unbounded — a multi-hour session on a dense urban scan could exhaust RAM. Disk output is always complete; only the in-memory summary is capped.
+    read_samples() now caps num_samples at MAX_SAMPLE_BUFFER (30M samples = ~240 MB for complex64). A 30-second dwell on a 30 MSPS rate would have allocated 7.2 GB.
+    FCCTowerDatabase._load() now checks file size before reading (MAX_DB_BYTES = 500 MB) and caps row count at MAX_TOWERS.
+
+Injection attack surface
+
+    Subprocess args: Both _run_grgsm_decode() and _run_srsran() now build their command lists exclusively from Python hardware constants (int(GSM_SAMPLE_RATE), int(freq_hz), int(bw_hz/1e6)). None of these ever touch RF-sourced data. shell=False is explicit on every subprocess.run() call.
+    Subprocess environment: Every subprocess.run() call passes env=SAFE_ENV — a minimal dict with only PATH, HOME, LANG, LC_ALL. Inheriting the full process environment exposes LD_PRELOAD, PYTHONPATH, and other controllable variables.
+    CSV formula injection: _sanitize_csv_field() strips any leading =, +, -, @, \t, \r, \n characters from every field before writing. These are the characters that trigger formula execution in spreadsheet apps. All tower CSV fields go through this before DictWriter.writerow().
+    RF-sourced string validation: All decoded values from subprocess output now pass through _validate_mcc(), _validate_mnc(), and _validate_int_field() with explicit ranges before entering any dict. MCC/MNC must match ^\d{2,3}$. PCI is clamped to 0–503 (3GPP TS 36.211). TAC 0–65535. ECI 0–268435455. rp_flags is now stored as {"reselection": bool, "path_loss": bool} — not as the raw RF object.
+    subprocess output cap: proc.stdout[:MAX_SUBPROCESS_OUTPUT_BYTES] (512 KB) applied before decoding. A rogue signal source emitting garbage data to overflow memory via grgsm output is now bounded.
+    _safe_json_loads(): Size-checks each line (MAX_JSON_LINE_BYTES = 64 KB) before calling json.loads(). Prevents a single oversized line from triggering pathological parser behavior.
+
+Temp file hardening
+
+Old: /tmp/ctw11_gsm_{int(time.time())}.cfile — predictable name, world-writable directory, no exclusive create.
+
+New: _make_temp_iq_path() creates /tmp/ctw11_iq/ with mode=0o700, verifies it's not group/world writable (symlink-swap guard), and generates filenames with secrets.token_hex(16). Files are opened with O_CREAT | O_EXCL | 0o600.
+
+File handle safety
+
+CollectionSession.__init__() now has a try/except around the two open() calls. If the second one fails, the first handle is explicitly closed before re-raising. Previously, an OSError on the anomaly file would leave the raw file handle permanently open. Output files are created with O_EXCL so the process never silently overwrites an existing session file.
+
+PlutoSDRDevice.open() now catches exceptions mid-initialization and sets self.sdr = None before re-raising, so __exit__ doesn't attempt to double-free a partially initialized device.
+
+PlutoSDRDevice.close() is now fully idempotent — each SDR call is wrapped in its own try/except so a failure on deactivateStream doesn't block closeStream.
+
+CLI input validation
+
+args.duration clamped to 1–86400 seconds. args.dwell clamped to 0.1–30 seconds. args.uri validated against ^[\w\.\:\-]{1,64}$ before use. args.output run through os.path.realpath() and checked for .. components. All of this happens before any hardware is touched.
+Ctw11 cell collector
+PY 
+
+step your game up, youre holding out over a dozen fixes, and multiple buffer overflow points are unpatched. this must be secure, not introduce more bugs with every patch you put in... give both the scanner and collector the same level of security (i know the document maker only makes documents, but it must be secure and verifiable and hashed file created)
+Apr 1
+
+Let me read everything carefully before touching a line.
+Viewed 5 files
+
+Now I have the complete picture. Let me catalog every remaining vulnerability before writing a single line:
+Document all remaining vulnerabilities
+
+Good. 16 confirmed issues. Now build both files from scratch — no patchwork.
+Created 2 files, ran a command
+
+Now build the scanner (Part 2) with full parity:
+Ran 3 commands, created a file, read a file
+
+Both files syntax-clean. All 16 collector fixes and 12 scanner security controls verified present. Here's the complete accounting:
+
+16 collector fixes — what each one actually does
+Fix	Issue	Resolution
+FIX-01	SoapySDRKwargs.get() crash	dict(results[0]).get() — cast before dict API call
+FIX-02	TOCTOU on temp IQ dir	os.open(dir, O_DIRECTORY) then os.fstat(dir_fd) — attacker cannot swap the dir between those two calls
+FIX-03	Double-close after os.fdopen()	Removed bare os.close(fd) in except — fdopen owns the fd; any second close is undefined behavior
+FIX-04	Tower CSV written then chmod() — race window	_open_output_file() with `O_EXCL
+FIX-05	Meta append used plain open() — no permission control	_open_append_file() with `O_WRONLY
+FIX-06	O_NOFOLLOW missing from all file creates	Added to every _open_output_file() call — blocks symlink redirect attacks
+FIX-07	makedirs() then chmod() — race between creation and permission set	_safe_umask(0o077) context wraps makedirs() — dir created at 0o700 atomically
+FIX-08	self.decoded = [] on GSMBurstDecoder accumulated frames across calls	Removed entirely — each decode_bcch() call is stateless
+FIX-09	compute_psd: samples[:nfft] silently produced wrong-bin FFT when len(samples) < nfft	Guard: requires >= nfft//4 samples; zero-pads to nfft; returns empty arrays if insufficient
+FIX-10	_validate_int_field: int("65535.0") raises ValueError; srsran emits float strings	int(float(str(value))) — handles both "65535" and "65535.0"
+FIX-11	FCCTowerDatabase.check(): None mnc → "None" string → never matches stored key → false CRITICAL	str(mnc) if mnc is not None else "" — matches stored "" keys
+FIX-12	_sanitize_csv_field: while loop on all-injection-char input could spin forever	lstrip("=+-@\t\r\n") — single O(n) pass, no loop
+FIX-13	read_samples: sr.ret == 0 with no error → infinite loop on hardware stall	Stall counter; breaks after MAX_READ_STALLS (10) consecutive zero returns
+FIX-14	session created inside try — finally block hit NameError if __init__ threw	session = CollectionSession() before try; _closed flag makes close() idempotent
+FIX-15	_running bare global bool — no memory barrier between signal handler and main thread	threading.Event() — _running.clear() / _running.is_set() with proper synchronization
+FIX-16	No integrity seal on evidence files	SHA-256 of all 4 output files + chain hash binding them to session timestamp, written as _manifest.sha256
+
+Scanner security controls (Part 2)
+
+The scanner has no hardware or subprocess surface — its attack surface is entirely the RF-collected JSON it reads. All 12 controls address that:
+
+    Input file size capped at 100 MB before read; content length re-checked after read
+    JSON array length capped at 50,000 records
+    Every field in every record validated through typed sanitizers before touching output
+    Severity and anomaly type values whitelisted — unknown values become "UNKNOWN" not silently passed through
+    Statute strings matched against ^(47|18|28|42) U.S.C. §... regex — arbitrary strings from RF data cannot appear in the report as legal citations
+    Float fields (power_dbm, freq_mhz) validated finite and in physically plausible range — NaN/Inf from corrupt input cannot propagate
+    All output files O_CREAT|O_EXCL|O_NOFOLLOW|0o600
+    SHA-256 manifest covers input file + both output files; re-hashes input at report time and flags if it changed between load and write
+
+Deliverable hashes:
+
+collector: a359fa040f60d856cfadd728026889a216ad52d39f19debcae73d37dc37c6243
+scanner:   e13baf4c362be5ef995050573343ba5eb5604054f353a51d607aad6662b10759
+
+Ctw11 cell collector
+PY 
+Ctw11 cell scanner
+PY 
+
+To run code, enable code execution and file creation in Settings > Capabilities.
+Claude needs code execution to access some attached files.
+Enable in settings
+
+
+Claude is AI and can make mistakes. Please double-check responses.
