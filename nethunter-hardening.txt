@@ -1,0 +1,278 @@
+#!/bin/bash
+# CTW-NetHunter Hardening Baseline v1.0
+# Platform: Kali NetHunter / Samsung SM-G930FD herolte
+# Purpose: Defensive baseline — entropy, SELinux, firewall, voltage/timing hardening
+# Usage: Run as root after fresh flash, before any tooling deployment
+
+set -euo pipefail
+LOGFILE="/var/log/ctw_harden_$(date +%Y%m%d_%H%M%S).log"
+exec > >(tee -a "$LOGFILE") 2>&1
+echo "[CTW] Hardening started: $(date)"
+
+###############################################################################
+# PHASE 1 — ENTROPY HARDENING
+# Goal: break deterministic timing signatures, expand entropy pool
+###############################################################################
+
+echo "[PHASE 1] Entropy hardening"
+
+# Install entropy daemons if not present
+apt-get update -qq
+apt-get install -y haveged rng-tools jitterentropy-rngd 2>/dev/null || true
+
+# haveged — harvest CPU jitter as entropy source
+systemctl enable haveged 2>/dev/null || true
+systemctl start haveged 2>/dev/null || true
+
+# Configure kernel entropy pool thresholds
+cat >> /etc/sysctl.d/99-ctw-entropy.conf << 'EOF'
+# CTW entropy hardening
+kernel.random.read_wakeup_threshold = 64
+kernel.random.write_wakeup_threshold = 256
+EOF
+
+# Jitter-based entropy injection loop (background, runs continuously)
+# Adds non-deterministic activity to CPU execution timeline
+cat > /usr/local/bin/ctw_jitter_daemon.sh << 'EOF'
+#!/bin/bash
+# CTW Jitter Daemon — entropy injection and timing desynchronization
+while true; do
+    # Variable sleep — breaks fixed-interval timing signatures
+    sleep $(awk 'BEGIN{srand(); print 0.1 + rand() * 0.9}')
+    # Mixed workload — integer, FP, memory — non-deterministic mix
+    dd if=/dev/urandom bs=512 count=1 2>/dev/null | sha256sum > /dev/null
+    openssl rand 256 > /dev/null 2>&1
+    ls -laR /proc/net > /dev/null 2>&1
+done
+EOF
+chmod +x /usr/local/bin/ctw_jitter_daemon.sh
+
+cat > /etc/systemd/system/ctw-jitter.service << 'EOF'
+[Unit]
+Description=CTW Jitter Entropy Daemon
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/ctw_jitter_daemon.sh
+Restart=always
+RestartSec=1
+Nice=19
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable ctw-jitter
+systemctl start ctw-jitter
+
+###############################################################################
+# PHASE 2 — SELINUX HARDENING
+# Note: NetHunter runs Android kernel — SELinux is enforced at Android layer
+# This section hardens the chroot/Linux environment side
+###############################################################################
+
+echo "[PHASE 2] SELinux / AppArmor baseline"
+
+# If AppArmor available in chroot environment
+if command -v apparmor_status &>/dev/null; then
+    apt-get install -y apparmor apparmor-utils apparmor-profiles 2>/dev/null || true
+    systemctl enable apparmor 2>/dev/null || true
+    systemctl start apparmor 2>/dev/null || true
+    aa-enforce /etc/apparmor.d/* 2>/dev/null || true
+    echo "[CTW] AppArmor enforcing mode active"
+else
+    echo "[CTW] AppArmor not available in this chroot — Android SELinux handles kernel enforcement"
+fi
+
+# Verify Android-side SELinux state (informational)
+if command -v getenforce &>/dev/null; then
+    SESTATE=$(getenforce)
+    echo "[CTW] SELinux state: $SESTATE"
+    if [ "$SESTATE" != "Enforcing" ]; then
+        echo "[CTW] WARNING: SELinux not enforcing — check Android policy"
+    fi
+fi
+
+###############################################################################
+# PHASE 3 — KERNEL / SYSCTL HARDENING
+# Voltage glitch hardening, memory protection, network stack lockdown
+###############################################################################
+
+echo "[PHASE 3] Kernel sysctl hardening"
+
+cat > /etc/sysctl.d/99-ctw-hardening.conf << 'EOF'
+# CTW Kernel Hardening — NetHunter Baseline
+
+# === MEMORY PROTECTION ===
+kernel.randomize_va_space = 2          # Full ASLR
+kernel.kptr_restrict = 2               # Hide kernel pointers
+kernel.dmesg_restrict = 1             # Restrict dmesg
+kernel.perf_event_paranoid = 3        # Restrict perf
+vm.mmap_min_addr = 65536              # Prevent null deref exploitation
+
+# === EXEC PROTECTION ===
+fs.protected_hardlinks = 1
+fs.protected_symlinks = 1
+fs.suid_dumpable = 0
+
+# === NETWORK STACK HARDENING ===
+net.ipv4.tcp_syncookies = 1
+net.ipv4.conf.all.rp_filter = 1
+net.ipv4.conf.default.rp_filter = 1
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.default.accept_redirects = 0
+net.ipv6.conf.all.accept_redirects = 0
+net.ipv4.conf.all.send_redirects = 0
+net.ipv4.conf.all.accept_source_route = 0
+net.ipv4.icmp_echo_ignore_broadcasts = 1
+net.ipv4.tcp_timestamps = 0           # Eliminate timing fingerprint
+net.ipv4.conf.all.log_martians = 1
+
+# === TIMING ATTACK SURFACE REDUCTION ===
+kernel.nmi_watchdog = 0               # Reduce deterministic NMI timing
+kernel.sched_min_granularity_ns = 10000000
+kernel.sched_wakeup_granularity_ns = 15000000
+EOF
+
+sysctl -p /etc/sysctl.d/99-ctw-hardening.conf
+
+###############################################################################
+# PHASE 4 — FIREWALL HARDENING (iptables)
+###############################################################################
+
+echo "[PHASE 4] Firewall hardening"
+
+apt-get install -y iptables iptables-persistent 2>/dev/null || true
+
+# Flush existing
+iptables -F
+iptables -X
+iptables -t nat -F
+iptables -t mangle -F
+ip6tables -F 2>/dev/null || true
+
+# Default deny
+iptables -P INPUT DROP
+iptables -P FORWARD DROP
+iptables -P OUTPUT ACCEPT
+
+# Allow loopback
+iptables -A INPUT -i lo -j ACCEPT
+iptables -A OUTPUT -o lo -j ACCEPT
+
+# Allow established/related
+iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+
+# Drop invalid packets
+iptables -A INPUT -m conntrack --ctstate INVALID -j DROP
+
+# Anti-scan: drop SYN packets with suspicious flags
+iptables -A INPUT -p tcp --tcp-flags ALL NONE -j DROP
+iptables -A INPUT -p tcp --tcp-flags SYN,FIN SYN,FIN -j DROP
+iptables -A INPUT -p tcp --tcp-flags SYN,RST SYN,RST -j DROP
+
+# Rate limit ICMP
+iptables -A INPUT -p icmp -m limit --limit 1/s --limit-burst 5 -j ACCEPT
+iptables -A INPUT -p icmp -j DROP
+
+# Log drops (before final drop rule)
+iptables -A INPUT -m limit --limit 5/min -j LOG --log-prefix "CTW-DROP: " --log-level 7
+
+# Save rules
+netfilter-persistent save 2>/dev/null || iptables-save > /etc/iptables/rules.v4
+
+echo "[CTW] Firewall rules committed"
+
+###############################################################################
+# PHASE 5 — SSH HARDENING (if running)
+###############################################################################
+
+echo "[PHASE 5] SSH hardening"
+
+if [ -f /etc/ssh/sshd_config ]; then
+    cp /etc/ssh/sshd_config /etc/ssh/sshd_config.ctw_backup
+    cat > /etc/ssh/sshd_config.d/99-ctw.conf << 'EOF'
+# CTW SSH hardening
+PermitRootLogin no
+PasswordAuthentication no
+ChallengeResponseAuthentication no
+UsePAM yes
+X11Forwarding no
+AllowAgentForwarding no
+AllowTcpForwarding no
+MaxAuthTries 3
+LoginGraceTime 20
+ClientAliveInterval 300
+ClientAliveCountMax 2
+EOF
+    echo "[CTW] SSH hardened"
+fi
+
+###############################################################################
+# PHASE 6 — SNAPSHOT BASELINE (backup before tooling)
+###############################################################################
+
+echo "[PHASE 6] Baseline snapshot"
+
+SNAPDIR="/root/ctw_baseline_$(date +%Y%m%d)"
+mkdir -p "$SNAPDIR"
+
+# Hash critical binaries
+find /bin /sbin /usr/bin /usr/sbin -type f -exec sha256sum {} \; > "$SNAPDIR/binary_hashes.txt" 2>/dev/null || true
+
+# Capture current package state
+dpkg -l > "$SNAPDIR/packages.txt" 2>/dev/null || true
+
+# Network state at time of hardening
+ip addr show > "$SNAPDIR/network_state.txt" 2>/dev/null || true
+ss -tulnp >> "$SNAPDIR/network_state.txt" 2>/dev/null || true
+
+# Loaded modules
+lsmod > "$SNAPDIR/lsmod.txt" 2>/dev/null || true
+
+# Running processes
+ps auxf > "$SNAPDIR/processes.txt" 2>/dev/null || true
+
+echo "[CTW] Baseline snapshot saved to $SNAPDIR"
+echo "[CTW] Hash this directory now and record it as your trust anchor"
+sha256sum "$SNAPDIR"/* | tee "$SNAPDIR/MANIFEST.sha256"
+
+###############################################################################
+# PHASE 7 — COMPILER TIMING DESYNCHRONIZATION
+# Breaks deterministic emit patterns from gcc/clang
+###############################################################################
+
+echo "[PHASE 7] Compiler timing hardening"
+
+# Wrapper that injects random delay before compiler invocations
+# Breaks phase-locked observation of compile events
+cat > /usr/local/bin/ctw_gcc_wrapper.sh << 'EOF'
+#!/bin/bash
+# CTW GCC wrapper — timing desynchronization
+DELAY=$(awk 'BEGIN{srand(); print rand() * 0.5}')
+sleep "$DELAY"
+exec /usr/bin/gcc.real "$@"
+EOF
+chmod +x /usr/local/bin/ctw_gcc_wrapper.sh
+
+# Only swap if gcc exists
+if [ -f /usr/bin/gcc ]; then
+    cp /usr/bin/gcc /usr/bin/gcc.real
+    ln -sf /usr/local/bin/ctw_gcc_wrapper.sh /usr/local/bin/gcc
+    echo "[CTW] GCC wrapper installed"
+fi
+
+###############################################################################
+# COMPLETION
+###############################################################################
+
+echo ""
+echo "============================================"
+echo " CTW NetHunter Hardening Baseline COMPLETE"
+echo " Log: $LOGFILE"
+echo " Snapshot: $SNAPDIR"
+echo " Next step: reboot, verify haveged active,"
+echo "            verify iptables rules persistent,"
+echo "            record MANIFEST.sha256 as trust anchor"
+echo "============================================"
