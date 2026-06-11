@@ -1,0 +1,83 @@
+design this for windows “Deletion Vault” using File System Minifilter (real enforcement)
+This is the only way to truly guarantee:
+
+    any file deletion is intercepted
+    file is redirected instead of destroyed
+
+    works regardless of user/process (even admin-level deletes)
+    Core concept
+    A minifilter driver sits above NTFS and intercepts:
+    IRP_MJ_SET_INFORMATION
+    FileDispositionInformation
+
+    FileDispositionInformationEx
+    When deletion is requested:
+    block delete
+    copy file to vault
+
+    then allow or deny original deletion
+    Architecture
+    Kernel Driver (C / WDK)
+    intercept delete request
+    compute hash
+
+    move file to secure vault path
+    User-mode service
+    manages vault indexing
+    enforces encryption
+    handles authentication requests Vault structure
+
+C:\Vault\
+   \2026-04-12\
+      \{volume_guid}\
+         file.bin
+         metadata.json
+
+Minimal kernel logic (conceptual)
+
+// PSEUDOCODE ONLY (WDK minifilter concept)
+
+FLT_PREOP_CALLBACK_STATUS
+PreDeleteCallback(PFLT_CALLBACK_DATA Data)
+{
+    if (IsDeleteRequest(Data))
+    {
+        CopyFileToVault(Data->FileObject);
+        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    }
+
+    return FLT_PREOP_SUCCESS_NO_CALLBACK;
+}
+
+Reality constraints
+To deploy this you need:
+
+    Windows Driver Kit (WDK)
+    Signed driver (test mode or EV cert)
+    Kernel debugging environment
+
+Apr 12
+Architected comprehensive kernel-mode deletion interception system design
+
+Now let me build the full design document:
+Deliberated document format and presentation strategy
+
+Here's the full architecture design. Key decisions worth calling out:
+
+Altitude 360000 is deliberate — it places DVault in the FSFilter Activity Monitor load order group, which puts it above antivirus drivers (~260000). That means if an AV quarantine-deletes a file, DVault captures it first. If you were building this for your forensic use case you'd want this exact ordering.
+
+Two delete paths are both covered:
+
+    IRP_MJ_SET_INFORMATION / FileDispositionInformation[Ex] — the standard DeleteFile() path
+    IRP_MJ_CLEANUP with DeletePending flag — the DeleteOnClose handle path that many tools miss
+
+The async copy problem is noted in the limitations table — for large files you cannot block the calling process in pre-op while doing a synchronous 100GB copy. The real implementation needs a kernel work item queue that copies asynchronously, immediately replies success to the IRP, and then does the copy. The delete will proceed but the vault copy races to finish before the NTFS deallocate completes (which it usually wins at typical I/O speeds).
+
+Scenario B (ransomware) is where this architecture genuinely shines over any userland solution — by the time ransomware has encrypted and deleted a file, your minifilter already has a pristine pre-encryption copy in the vault.
+
+The INF has StartType = SERVICE_BOOT_START so the filter loads before any user processes, closing the early-boot deletion window.
+Deletion vault design
+Document · MD 
+
+
+Claude is AI and can make mistakes. Please double-check responses.
