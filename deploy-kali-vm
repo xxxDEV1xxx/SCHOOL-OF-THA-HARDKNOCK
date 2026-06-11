@@ -1,0 +1,111 @@
+#!/bin/bash
+# ================================================================================
+#   SDAR™ — Kali Purple VM Deployment Script
+#   Inventor: Christopher T. Williams | 20 March 2026 (PST)
+#   Configures ttyS0 serial console + SDAR passive guard service
+#   Run as root inside the Kali VM AFTER LUKS unlock and full boot
+# ================================================================================
+
+set -euo pipefail
+
+echo "╔══════════════════════════════════════════════════════╗"
+echo "║  SDAR™ Kali VM Deployment — Christopher T. Williams ║"
+echo "╚══════════════════════════════════════════════════════╝"
+
+# ─────────────────────────────────────────────────────────────
+# 1. GRUB serial console — LUKS-safe
+#    console=tty0 FIRST so LUKS prompt stays on physical display
+#    console=ttyS0 second gets post-boot output only
+# ─────────────────────────────────────────────────────────────
+echo "[*] Configuring GRUB serial console (LUKS-safe)..."
+
+GRUB_FILE="/etc/default/grub"
+cp "$GRUB_FILE" "$GRUB_FILE.sdar_backup_$(date +%Y%m%d_%H%M%S)"
+
+# Replace GRUB_CMDLINE_LINUX_DEFAULT preserving existing params
+sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT="quiet splash console=tty0 console=ttyS0,115200n8"/' "$GRUB_FILE"
+
+# Add serial terminal config if not present
+grep -q "GRUB_TERMINAL" "$GRUB_FILE" || echo 'GRUB_TERMINAL="serial console"' >> "$GRUB_FILE"
+grep -q "GRUB_SERIAL_COMMAND" "$GRUB_FILE" || echo 'GRUB_SERIAL_COMMAND="serial --unit=0 --speed=115200 --word=8 --parity=no --stop=1"' >> "$GRUB_FILE"
+
+update-grub
+echo "[+] GRUB updated. LUKS prompt remains on tty0 (physical display)."
+
+# ─────────────────────────────────────────────────────────────
+# 2. Enable serial-getty on ttyS0
+#    This provides the login shell PuTTY/host guard connects to
+# ─────────────────────────────────────────────────────────────
+echo "[*] Enabling serial-getty@ttyS0..."
+systemctl enable serial-getty@ttyS0.service
+systemctl start  serial-getty@ttyS0.service
+echo "[+] serial-getty@ttyS0 active."
+
+# ─────────────────────────────────────────────────────────────
+# 3. Install SDAR VM guard script
+# ─────────────────────────────────────────────────────────────
+echo "[*] Installing SDAR VM guard..."
+install -m 750 -o root -g root sdar-vm-guard.py /usr/local/bin/sdar-vm-guard
+
+# ─────────────────────────────────────────────────────────────
+# 4. Systemd unit for SDAR VM guard
+# ─────────────────────────────────────────────────────────────
+cat > /etc/systemd/system/sdar-vm-guard.service << 'EOF'
+[Unit]
+Description=SDAR VM Passive Serial Guard (Christopher T. Williams)
+Documentation=https://sdar.invention/
+After=network.target serial-getty@ttyS0.service
+Wants=serial-getty@ttyS0.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/bin/sdar-vm-guard
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sdar-vm-guard
+
+# Hardening
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/log/sdar /dev/ttyS0
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable sdar-vm-guard.service
+systemctl start  sdar-vm-guard.service
+
+echo "[+] sdar-vm-guard.service active."
+
+# ─────────────────────────────────────────────────────────────
+# 5. Verify ttyS0 exists and is accessible
+# ─────────────────────────────────────────────────────────────
+echo "[*] Verifying /dev/ttyS0..."
+if [ -c /dev/ttyS0 ]; then
+    echo "[+] /dev/ttyS0 confirmed: $(ls -la /dev/ttyS0)"
+    dmesg | grep -i ttys | tail -5
+else
+    echo "[!] WARNING: /dev/ttyS0 not found — check VMware serial port config"
+    exit 1
+fi
+
+# ─────────────────────────────────────────────────────────────
+# 6. Quick loopback smoke test
+# ─────────────────────────────────────────────────────────────
+echo "[*] Smoke test — writing to ttyS0 (check PuTTY/host guard for output)..."
+echo "[SDAR-SMOKE-TEST] ttyS0 active. Host should see this." > /dev/ttyS0
+echo "[+] Smoke test sent."
+
+echo ""
+echo "╔══════════════════════════════════════════════════════╗"
+echo "║  SDAR VM DEPLOYMENT COMPLETE                        ║"
+echo "║  Services: serial-getty@ttyS0 + sdar-vm-guard       ║"
+echo "║  Logs    : /var/log/sdar/                           ║"
+echo "║  Status  : systemctl status sdar-vm-guard           ║"
+echo "╚══════════════════════════════════════════════════════╝"
