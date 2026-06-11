@@ -1,0 +1,295 @@
+#Requires -Version 5.1
+<#
+.SYNOPSIS
+    NetHunter Herolte Deployer â€” Windows 10 PowerShell launcher
+    Drives deploy_herolte.sh + ondevice_build.sh via ADB (WSL or Git Bash)
+
+.DESCRIPTION
+    Detects bash environment (WSL preferred, Git Bash fallback),
+    verifies ADB device, pushes scripts, and runs the deployment.
+
+.NOTES
+    Place this file alongside:
+        deploy_herolte.sh
+        ondevice_build.sh
+        aoa_android\
+        dsl_s_elf\
+        sentinel\
+#>
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+# â”€â”€ Colour helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+function Write-Step  { param($m) Write-Host "[*] $m" -ForegroundColor Cyan    }
+function Write-OK    { param($m) Write-Host "[âœ“] $m" -ForegroundColor Green   }
+function Write-Warn  { param($m) Write-Host "[!] $m" -ForegroundColor Yellow  }
+function Write-Fatal { param($m) Write-Host "[âœ—] $m" -ForegroundColor Red; exit 1 }
+
+# â”€â”€ Banner â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+Write-Host ""
+Write-Host "â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•" -ForegroundColor Magenta
+Write-Host "  NetHunter Herolte Deploy â€” PowerShell Launcher      " -ForegroundColor Magenta
+Write-Host "  Samsung S7 (herolte)  Kali NetHunter 2026.1         " -ForegroundColor Magenta
+Write-Host "â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•" -ForegroundColor Magenta
+Write-Host ""
+
+# â”€â”€ Script root (folder where this .ps1 lives) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
+
+# â”€â”€ Step 1: Locate ADB â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+Write-Step "Locating ADB..."
+
+$adb = $null
+
+# 1a. ADB in PATH
+if (Get-Command adb -ErrorAction SilentlyContinue) {
+    $adb = (Get-Command adb).Source
+}
+
+# 1b. Android SDK common locations
+if (-not $adb) {
+    $candidates = @(
+        "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe",
+        "$env:USERPROFILE\AppData\Local\Android\Sdk\platform-tools\adb.exe",
+        "C:\Android\platform-tools\adb.exe",
+        "C:\Program Files\Android\platform-tools\adb.exe",
+        "C:\platform-tools\adb.exe"
+    )
+    foreach ($c in $candidates) {
+        if (Test-Path $c) { $adb = $c; break }
+    }
+}
+
+if (-not $adb) {
+    Write-Fatal "ADB not found. Install Android Platform Tools and add to PATH.`n  https://developer.android.com/tools/releases/platform-tools"
+}
+Write-OK "ADB: $adb"
+
+# â”€â”€ Step 2: Locate bash (WSL preferred, Git Bash fallback) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+Write-Step "Locating bash environment..."
+
+$BashMode = $null   # 'wsl' | 'gitbash'
+$BashExe  = $null
+
+# 2a. WSL
+if (Get-Command wsl -ErrorAction SilentlyContinue) {
+    $wslCheck = wsl --list --quiet 2>&1
+    if ($LASTEXITCODE -eq 0 -and $wslCheck) {
+        $BashMode = 'wsl'
+        $BashExe  = 'wsl'
+        Write-OK "Bash: WSL"
+    }
+}
+
+# 2b. Git Bash
+if (-not $BashMode) {
+    $gitBashCandidates = @(
+        "C:\Program Files\Git\bin\bash.exe",
+        "C:\Program Files (x86)\Git\bin\bash.exe",
+        "$env:LOCALAPPDATA\Programs\Git\bin\bash.exe"
+    )
+    foreach ($g in $gitBashCandidates) {
+        if (Test-Path $g) {
+            $BashMode = 'gitbash'
+            $BashExe  = $g
+            Write-OK "Bash: Git Bash ($g)"
+            break
+        }
+    }
+}
+
+if (-not $BashMode) {
+    Write-Fatal "No bash found. Install WSL (wsl --install) or Git for Windows (https://git-scm.com)."
+}
+
+# â”€â”€ Path conversion helper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Converts a Windows path to the form bash expects
+function ConvertTo-BashPath {
+    param([string]$WinPath)
+    switch ($BashMode) {
+        'wsl' {
+            # wsl.exe --exec wslpath is the safest conversion
+            $p = & wsl wslpath -a ($WinPath -replace '\\','/')
+            return $p.Trim()
+        }
+        'gitbash' {
+            # Git Bash wants /c/Users/... style
+            $p = $WinPath -replace '\\','/'
+            if ($p -match '^([A-Za-z]):(.*)') {
+                return '/' + $Matches[1].ToLower() + $Matches[2]
+            }
+            return $p
+        }
+    }
+}
+
+# â”€â”€ Step 3: Verify required files â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+Write-Step "Checking required files and directories..."
+
+$required = @(
+    "deploy_herolte.sh",
+    "ondevice_build.sh",
+    "aoa_android",
+    "dsl_s_elf",
+    "sentinel"
+)
+
+$allPresent = $true
+foreach ($item in $required) {
+    $full = Join-Path $ScriptDir $item
+    if (Test-Path $full) {
+        Write-OK "Found: $item"
+    } else {
+        Write-Warn "MISSING: $item"
+        $allPresent = $false
+    }
+}
+if (-not $allPresent) {
+    Write-Fatal "One or more required files missing. Ensure deploy_herolte.sh, ondevice_build.sh, aoa_android\, dsl_s_elf\, and sentinel\ are alongside this script."
+}
+
+# â”€â”€ Step 4: ADB device check â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+Write-Step "Starting ADB server and checking for device..."
+& $adb start-server 2>&1 | Out-Null
+Start-Sleep -Seconds 2
+
+$adbDevices = & $adb devices 2>&1
+$deviceLine = $adbDevices | Select-String -Pattern '\bdevice$' | Select-Object -First 1
+if (-not $deviceLine) {
+    Write-Fatal "No authorised ADB device found.`n  Check: USB cable, USB debugging enabled, trust prompt on phone."
+}
+
+$deviceId = ($deviceLine.Line -split '\s+')[0]
+Write-OK "Device detected: $deviceId"
+
+# Read device properties
+$model  = (& $adb shell getprop ro.product.model 2>&1).Trim() -replace "`r",''
+$board  = (& $adb shell getprop ro.product.board 2>&1).Trim() -replace "`r",''
+Write-OK "Model: $model   Board: $board"
+
+if ($board -notmatch 'universal8890' -and $model -notmatch 'SM-G930') {
+    Write-Warn "Device may not be a herolte (S7). Board='$board'. Proceeding anyway."
+}
+
+# â”€â”€ Step 5: Fix line endings (CRLF â†’ LF) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+Write-Step "Normalising line endings on shell scripts (CRLF â†’ LF)..."
+
+foreach ($sh in @("deploy_herolte.sh","ondevice_build.sh")) {
+    $path = Join-Path $ScriptDir $sh
+    $content = [System.IO.File]::ReadAllText($path)
+    $fixed   = $content -replace "`r`n","`n" -replace "`r","`n"
+    [System.IO.File]::WriteAllText($path, $fixed, [System.Text.UTF8Encoding]::new($false))
+    Write-OK "Fixed: $sh"
+}
+
+# â”€â”€ Step 6: Make scripts executable via bash â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+Write-Step "Setting execute permissions on shell scripts..."
+
+$deployBash   = ConvertTo-BashPath (Join-Path $ScriptDir "deploy_herolte.sh")
+$ondeviceBash = ConvertTo-BashPath (Join-Path $ScriptDir "ondevice_build.sh")
+$scriptDirBash = ConvertTo-BashPath $ScriptDir
+
+switch ($BashMode) {
+    'wsl'     { wsl chmod +x $deployBash $ondeviceBash }
+    'gitbash' { & $BashExe -c "chmod +x '$deployBash' '$ondeviceBash'" }
+}
+Write-OK "Scripts are executable."
+
+# â”€â”€ Step 7: Inject ADB path into WSL/GitBash PATH if needed â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# The bash scripts call `adb` â€” make sure it's visible inside the bash session
+$adbDirBash = ConvertTo-BashPath (Split-Path $adb)
+
+# â”€â”€ Step 8: Run deploy_herolte.sh â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+Write-Host ""
+Write-Host "â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•" -ForegroundColor Cyan
+Write-Host "  PHASE 1 â€” Running deploy_herolte.sh                 " -ForegroundColor Cyan
+Write-Host "â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•" -ForegroundColor Cyan
+
+$logFile = Join-Path $ScriptDir "deploy_herolte_win.log"
+
+$deployCmd = "export PATH=`"`$PATH:$adbDirBash`" && cd '$scriptDirBash' && bash deploy_herolte.sh"
+
+Write-Step "Executing deploy_herolte.sh (output â†’ $logFile)..."
+
+switch ($BashMode) {
+    'wsl' {
+        wsl bash -c $deployCmd | Tee-Object -FilePath $logFile
+    }
+    'gitbash' {
+        & $BashExe -c $deployCmd | Tee-Object -FilePath $logFile
+    }
+}
+
+if ($LASTEXITCODE -ne 0) {
+    Write-Fatal "deploy_herolte.sh exited with code $LASTEXITCODE. Check $logFile"
+}
+Write-OK "deploy_herolte.sh completed."
+
+# â”€â”€ Step 9: Push ondevice_build.sh and run it via ADB â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+Write-Host ""
+Write-Host "â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•" -ForegroundColor Cyan
+Write-Host "  PHASE 2 â€” Pushing & running ondevice_build.sh       " -ForegroundColor Cyan
+Write-Host "â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•" -ForegroundColor Cyan
+
+Write-Step "Pushing ondevice_build.sh to /sdcard/ondevice_build.sh..."
+& $adb push (Join-Path $ScriptDir "ondevice_build.sh") "/sdcard/ondevice_build.sh"
+if ($LASTEXITCODE -ne 0) { Write-Fatal "adb push failed for ondevice_build.sh" }
+Write-OK "Script pushed."
+
+Write-Step "Setting execute permission on device..."
+& $adb shell "su -c 'chmod +x /sdcard/ondevice_build.sh'"
+Write-OK "Permission set."
+
+Write-Step "Running ondevice_build.sh on device (streaming output)..."
+$ondeviceLog = Join-Path $ScriptDir "deploy_ondevice_win.log"
+
+& $adb shell "su -c '/sdcard/ondevice_build.sh 2>&1'" | Tee-Object -FilePath $ondeviceLog
+
+if ($LASTEXITCODE -ne 0) {
+    Write-Fatal "ondevice_build.sh exited with code $LASTEXITCODE. Check $ondeviceLog"
+}
+Write-OK "ondevice_build.sh completed."
+
+# â”€â”€ Step 10: Verify deployed binaries â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+Write-Host ""
+Write-Step "Verifying deployed binaries on device..."
+
+$binaries = @(
+    "/data/local/nhsystem/kali-arm64/usr/local/bin/aoa_softmac",
+    "/data/local/nhsystem/kali-arm64/usr/local/bin/dsl_s_elf",
+    "/data/local/nhsystem/kali-arm64/usr/local/bin/sentinel"
+)
+
+$allOK = $true
+foreach ($bin in $binaries) {
+    $result = & $adb shell "su -c 'test -f $bin && echo PRESENT || echo MISSING'" 2>&1
+    $result = $result.Trim() -replace "`r",''
+    if ($result -eq 'PRESENT') {
+        Write-OK "Verified: $bin"
+    } else {
+        Write-Warn "MISSING:  $bin"
+        $allOK = $false
+    }
+}
+
+# â”€â”€ Final summary â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+Write-Host ""
+Write-Host "â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•" -ForegroundColor Magenta
+Write-Host "  Deployment Summary                                   " -ForegroundColor Magenta
+Write-Host "â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•" -ForegroundColor Magenta
+Write-Host "  Host log (deploy phase) : $logFile"
+Write-Host "  Device log (build phase): $ondeviceLog"
+Write-Host ""
+
+if ($allOK) {
+    Write-OK "All binaries confirmed on device."
+    Write-Host ""
+    Write-Host "  Reboot the device to apply a clean state:" -ForegroundColor Cyan
+    Write-Host "    adb reboot" -ForegroundColor White
+} else {
+    Write-Warn "One or more binaries missing. Review $ondeviceLog for build errors."
+}
+
+Write-Host ""
+Write-Host "â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•" -ForegroundColor Magenta
