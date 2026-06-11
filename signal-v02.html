@@ -1,0 +1,978 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SIGNAL // Forensic DAW — v0.2</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;1,9..144,300&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-0:  #0a0d0c;
+    --bg-1:  #0f1311;
+    --bg-2:  #141917;
+    --bg-3:  #1a201d;
+    --bg-track: #0d1110;   /* track body */
+    --bg-ctrl:  #12181a;   /* left-side control strip */
+    --line:    #1f2622;
+    --line-br: #2a332d;
+    --ink-0:   #d8e4dc;
+    --ink-1:   #8a9a91;
+    --ink-2:   #4f5c55;
+    --ink-3:   #2e3833;
+
+    /* instrument accents */
+    --wifi:   #4ade80;
+    --bt:     #60a5fa;
+    --gps:    #fbbf24;
+    --ublox:  #f97316;
+    --geiger: #ef4444;
+    --audio:  #a78bfa;
+    --video:  #22d3ee;
+    --nlp:    #f472b6;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body {
+    height:100%;
+    background:var(--bg-0);
+    color:var(--ink-0);
+    font-family:'JetBrains Mono',monospace;
+    font-size:11px;
+    overflow:hidden;
+    -webkit-font-smoothing:antialiased;
+  }
+  /* CRT scanline overlay, very faint */
+  body::before {
+    content:''; position:fixed; inset:0; pointer-events:none; z-index:9999;
+    background-image:repeating-linear-gradient(0deg, transparent 0 2px, rgba(255,255,255,0.012) 2px 3px);
+    mix-blend-mode:overlay;
+  }
+
+  .app {
+    display:grid;
+    grid-template-rows: 30px 1fr 20px;
+    height:100vh; width:100vw;
+  }
+
+  /* ============ TOP BAR ============ */
+  .topbar {
+    background:var(--bg-1);
+    border-bottom:1px solid var(--line);
+    display:flex; align-items:center;
+    padding:0 14px; gap:22px;
+    font-size:10px; letter-spacing:0.08em;
+  }
+  .brand {
+    font-family:'Fraunces',serif; font-style:italic; font-weight:300;
+    font-size:14px; color:var(--ink-0);
+  }
+  .brand::after {
+    content:'v0.2'; font-family:'JetBrains Mono',monospace;
+    font-size:9px; color:var(--ink-2); margin-left:7px;
+    letter-spacing:0.1em; vertical-align:super;
+  }
+  .menu { display:flex; gap:16px; color:var(--ink-1); text-transform:uppercase; }
+  .menu span { cursor:pointer; }
+  .menu span:hover { color:var(--ink-0); }
+  .transport {
+    display:flex; gap:4px; margin-left:8px;
+  }
+  .transport .tx {
+    width:22px; height:20px; display:flex; align-items:center; justify-content:center;
+    border:1px solid var(--line-br); color:var(--ink-1); cursor:pointer; font-size:9px;
+    background:var(--bg-2);
+  }
+  .transport .tx:hover { color:var(--ink-0); border-color:var(--ink-2); }
+  .transport .tx.rec { color:var(--geiger); }
+  .transport .tx.play { color:var(--wifi); border-color:#2a4a33; background:#0d1a12; }
+
+  .clock {
+    margin-left:auto; display:flex; align-items:center; gap:14px; color:var(--ink-1);
+  }
+  .clock .ntp { display:flex; align-items:center; gap:6px; }
+  .clock .dot {
+    width:6px; height:6px; border-radius:50%; background:var(--wifi);
+    box-shadow:0 0 6px var(--wifi); animation:pulse 2s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+  .clock .time {
+    color:var(--ink-0); font-weight:500; font-variant-numeric:tabular-nums;
+  }
+  .clock .drift { color:var(--ink-2); font-size:9px; }
+
+  /* ============ MAIN STAGE: master score on top, tracks below ============ */
+  .stage {
+    display:grid;
+    grid-template-rows: auto 4px 1fr;
+    overflow:hidden;
+    min-height:0;
+  }
+
+  /* ---- master score (resizable horizontal bar) ---- */
+  .master {
+    background:var(--bg-1);
+    border-bottom:1px solid var(--line-br);
+    display:flex;
+    min-height:120px; max-height:60vh;
+    height:220px;
+    overflow:hidden;
+  }
+  .master-ctrl {
+    width:170px; flex-shrink:0;
+    background:var(--bg-2);
+    border-right:1px solid var(--line);
+    padding:8px 10px;
+    display:flex; flex-direction:column;
+  }
+  .master-ctrl .lbl {
+    font-size:8px; color:var(--ink-2); letter-spacing:0.15em;
+    text-transform:uppercase; margin-bottom:4px;
+  }
+  .master-ctrl .ttl {
+    font-family:'Fraunces',serif; font-style:italic; font-size:14px;
+    color:var(--ink-0); margin-bottom:8px;
+  }
+  .master-ctrl .range-row {
+    display:flex; justify-content:space-between;
+    font-size:9px; color:var(--ink-1); margin-bottom:2px;
+    font-variant-numeric:tabular-nums;
+  }
+  .master-ctrl .range-row .v { color:var(--ink-0); }
+  .master-ctrl .hint {
+    margin-top:auto; font-size:8px; color:var(--ink-2);
+    letter-spacing:0.1em; text-transform:uppercase;
+  }
+  .master-stage {
+    flex:1; position:relative; overflow:hidden;
+  }
+  .master-stage canvas { display:block; width:100%; height:100%; }
+
+  /* drag handle between master & tracks */
+  .resizer {
+    background:var(--bg-0);
+    border-top:1px solid var(--line);
+    border-bottom:1px solid var(--line);
+    cursor:row-resize;
+    position:relative;
+  }
+  .resizer::before {
+    content:''; position:absolute; left:50%; top:50%;
+    width:40px; height:1px; background:var(--ink-3);
+    transform:translate(-50%, -50%);
+  }
+  .resizer:hover::before { background:var(--ink-1); }
+
+  /* ---- instrument tracks area ---- */
+  .tracks {
+    background:var(--bg-0);
+    overflow-y:auto; overflow-x:hidden;
+    display:flex; flex-direction:column;
+  }
+  .tracks-header {
+    display:flex;
+    height:22px; flex-shrink:0;
+    background:var(--bg-1);
+    border-bottom:1px solid var(--line);
+    font-size:9px; color:var(--ink-2); letter-spacing:0.15em;
+    text-transform:uppercase;
+    position:sticky; top:0; z-index:5;
+  }
+  .tracks-header .hdr-ctrl {
+    width:170px; padding:0 10px; display:flex; align-items:center;
+    border-right:1px solid var(--line);
+  }
+  .tracks-header .hdr-stage {
+    flex:1; display:flex; align-items:center; padding:0 10px;
+    justify-content:space-between;
+  }
+  .tracks-header .hdr-stage .hdr-r { color:var(--ink-2); }
+
+  .track {
+    display:flex;
+    height:74px; flex-shrink:0;
+    border-bottom:1px solid var(--line);
+    position:relative;
+  }
+  .track.on .track-ctrl { border-left-color:var(--accent); }
+  .track.off .track-stage { opacity:.35; filter:saturate(0.3); }
+
+  .track-ctrl {
+    width:170px; flex-shrink:0;
+    background:var(--bg-ctrl);
+    border-right:1px solid var(--line);
+    border-left:2px solid transparent;
+    padding:6px 8px 6px 10px;
+    display:grid;
+    grid-template-columns: auto 1fr;
+    grid-template-rows: auto 1fr auto;
+    gap:3px 8px;
+    align-items:center;
+  }
+  .track-ctrl .num {
+    grid-row:1 / span 2; grid-column:1;
+    font-family:'Fraunces',serif; font-style:italic;
+    font-size:24px; color:var(--accent); line-height:1;
+    align-self:start; padding-top:2px;
+    text-shadow:0 0 8px color-mix(in srgb, var(--accent) 40%, transparent);
+    font-variant-numeric:tabular-nums;
+  }
+  .track-ctrl .label {
+    grid-row:1; grid-column:2;
+    font-size:9px; color:var(--ink-2); letter-spacing:0.15em;
+    text-transform:uppercase;
+  }
+  .track-ctrl .name {
+    grid-row:2; grid-column:2;
+    font-family:'Fraunces',serif; font-style:italic; font-size:13px;
+    color:var(--ink-0); line-height:1.1;
+  }
+  .track-ctrl .rowbtn {
+    grid-row:3; grid-column:1 / span 2;
+    display:flex; gap:4px; align-items:center;
+    margin-top:4px;
+  }
+  .tbtn {
+    width:18px; height:16px; display:flex; align-items:center; justify-content:center;
+    font-size:8px; font-weight:700; letter-spacing:0.05em;
+    background:var(--bg-0); color:var(--ink-2);
+    border:1px solid var(--line-br); cursor:pointer;
+  }
+  .tbtn:hover { color:var(--ink-0); }
+  .tbtn.on {
+    background:color-mix(in srgb, var(--accent) 20%, transparent);
+    color:var(--accent);
+    border-color:color-mix(in srgb, var(--accent) 50%, transparent);
+  }
+  .tbtn.mute.on { background:#2a1a1a; color:#f87171; border-color:#4a2222; }
+  .track-ctrl .stats {
+    grid-row:3; grid-column:2;
+    justify-self:end;
+    display:flex; gap:8px; font-size:9px; color:var(--ink-1);
+    font-variant-numeric:tabular-nums;
+  }
+  .track-ctrl .stats .k { color:var(--ink-2); font-size:8px; letter-spacing:0.1em; text-transform:uppercase; margin-right:3px; }
+  .track-ctrl .stats .v.accent { color:var(--accent); }
+
+  .track-stage {
+    flex:1; position:relative; background:var(--bg-track);
+    overflow:hidden;
+  }
+  .track-stage canvas { display:block; width:100%; height:100%; }
+
+  /* tooltip */
+  .tooltip {
+    position:fixed; pointer-events:none;
+    background:var(--bg-1);
+    border:1px solid var(--line-br); border-left:2px solid var(--wifi);
+    padding:9px 11px; min-width:250px; max-width:310px;
+    font-size:10px; z-index:1000;
+    box-shadow:0 8px 24px rgba(0,0,0,.7);
+    opacity:0; transition:opacity .08s;
+  }
+  .tooltip.visible { opacity:1; }
+  .tt-head { display:flex; justify-content:space-between; align-items:baseline;
+             padding-bottom:5px; margin-bottom:6px; border-bottom:1px solid var(--line); }
+  .tt-ssid { font-family:'Fraunces',serif; font-style:italic; font-size:13px; color:var(--ink-0); }
+  .tt-bssid { font-size:9px; color:var(--ink-2); margin-top:1px; letter-spacing:0.04em; }
+  .tt-now { color:var(--wifi); font-size:14px; font-weight:500; font-variant-numeric:tabular-nums; }
+  .tt-meta { display:grid; grid-template-columns:auto 1fr; gap:2px 10px; margin-bottom:6px; }
+  .tt-meta .k { color:var(--ink-2); font-size:9px; letter-spacing:0.08em; text-transform:uppercase; }
+  .tt-meta .v { color:var(--ink-0); font-variant-numeric:tabular-nums; }
+  .tt-hlbl { font-size:8px; color:var(--ink-2); letter-spacing:0.15em; text-transform:uppercase;
+             margin:6px 0 4px; }
+  .tt-hist { max-height:130px; overflow-y:auto; }
+  .tt-row { display:grid; grid-template-columns:1fr auto auto; gap:8px; padding:1px 0;
+            font-variant-numeric:tabular-nums; border-bottom:1px dotted var(--line); }
+  .tt-row:last-child { border:none; }
+  .tt-row .ts { color:var(--ink-2); font-size:9px; }
+  .tt-row .dbm { color:var(--ink-0); }
+  .tt-row .d.up { color:#4ade80; }
+  .tt-row .d.down { color:#f87171; }
+  .tt-row .d.flat { color:var(--ink-2); }
+
+  /* ============ STATUS BAR ============ */
+  .status {
+    background:var(--bg-1); border-top:1px solid var(--line);
+    display:flex; align-items:center; padding:0 14px; gap:18px;
+    font-size:9px; color:var(--ink-2); letter-spacing:0.1em; text-transform:uppercase;
+  }
+  .status .seg { display:flex; gap:5px; align-items:center; }
+  .status .seg .v { color:var(--ink-0); font-variant-numeric:tabular-nums; }
+  .status .push { margin-left:auto; }
+
+  ::-webkit-scrollbar { width:6px; height:6px; }
+  ::-webkit-scrollbar-track { background:transparent; }
+  ::-webkit-scrollbar-thumb { background:var(--line-br); }
+  ::-webkit-scrollbar-thumb:hover { background:var(--ink-3); }
+</style>
+</head>
+<body>
+
+<div class="app">
+
+  <!-- ============ TOP BAR ============ -->
+  <header class="topbar">
+    <div class="brand">SIGNAL</div>
+    <nav class="menu">
+      <span>FILE</span><span>SESSION</span><span>INSTRUMENTS</span><span>HEURISTICS</span><span>VIEW</span>
+    </nav>
+    <div class="transport">
+      <div class="tx rec" title="Arm">●</div>
+      <div class="tx play" title="Play">▶</div>
+      <div class="tx" title="Pause">❚❚</div>
+      <div class="tx" title="Stop">■</div>
+    </div>
+    <div class="clock">
+      <div class="ntp"><div class="dot"></div>NTP LOCK</div>
+      <div class="time" id="utc-clock">--:--:--.---Z</div>
+      <div class="drift" id="drift">±0.4ms</div>
+    </div>
+  </header>
+
+  <!-- ============ STAGE ============ -->
+  <main class="stage" id="stage">
+
+    <!-- Master score: full width, resizable -->
+    <section class="master" id="master">
+      <div class="master-ctrl">
+        <div class="lbl">MASTER</div>
+        <div class="ttl">Score</div>
+        <div class="range-row"><span>Window</span><span class="v" id="win-sec">60s</span></div>
+        <div class="range-row"><span>Y-Axis</span><span class="v">dBm</span></div>
+        <div class="range-row"><span>Range</span><span class="v">-95 / -25</span></div>
+        <div class="range-row"><span>Active</span><span class="v" id="active-count">1</span></div>
+        <div class="hint">Drag bottom edge to resize →</div>
+      </div>
+      <div class="master-stage">
+        <canvas id="master-canvas"></canvas>
+      </div>
+    </section>
+
+    <!-- Resizer handle -->
+    <div class="resizer" id="resizer"></div>
+
+    <!-- Instrument tracks -->
+    <section class="tracks" id="tracks">
+      <div class="tracks-header">
+        <div class="hdr-ctrl">INSTRUMENT</div>
+        <div class="hdr-stage">
+          <span>SCORE →</span>
+          <span class="hdr-r">dBm · EAST = TIME</span>
+        </div>
+      </div>
+
+      <!-- WiFi track (on) -->
+      <div class="track on" style="--accent: var(--wifi);" data-inst="wifi">
+        <div class="track-ctrl">
+          <div class="num">01</div>
+          <div class="label">I-01 · RF</div>
+          <div class="name">WiFi Scanner</div>
+          <div class="rowbtn">
+            <div class="tbtn on" title="Enabled">ON</div>
+            <div class="tbtn mute" title="Mute">M</div>
+            <div class="tbtn" title="Solo">S</div>
+            <div class="tbtn" title="Record">●</div>
+          </div>
+          <div class="stats">
+            <div><span class="k">APS</span><span class="v accent" id="ap-count">12</span></div>
+            <div><span class="k">PK</span><span class="v" id="strongest">-38</span></div>
+          </div>
+        </div>
+        <div class="track-stage">
+          <canvas id="wifi-canvas"></canvas>
+        </div>
+      </div>
+
+      <!-- Bluetooth track (off, preview) -->
+      <div class="track off" style="--accent: var(--bt);" data-inst="bt">
+        <div class="track-ctrl">
+          <div class="num">02</div>
+          <div class="label">I-02 · RF</div>
+          <div class="name">Bluetooth</div>
+          <div class="rowbtn">
+            <div class="tbtn" title="Enable">ON</div>
+            <div class="tbtn mute" title="Mute">M</div>
+            <div class="tbtn" title="Solo">S</div>
+            <div class="tbtn" title="Record">●</div>
+          </div>
+          <div class="stats">
+            <div><span class="k">DEV</span><span class="v">—</span></div>
+          </div>
+        </div>
+        <div class="track-stage"><canvas class="placeholder-canvas"></canvas></div>
+      </div>
+
+      <!-- GPS track -->
+      <div class="track off" style="--accent: var(--gps);" data-inst="gps">
+        <div class="track-ctrl">
+          <div class="num">03</div>
+          <div class="label">I-03 · NAV</div>
+          <div class="name">GPS</div>
+          <div class="rowbtn">
+            <div class="tbtn" title="Enable">ON</div>
+            <div class="tbtn mute" title="Mute">M</div>
+            <div class="tbtn" title="Solo">S</div>
+            <div class="tbtn" title="Record">●</div>
+          </div>
+          <div class="stats">
+            <div><span class="k">FIX</span><span class="v">—</span></div>
+          </div>
+        </div>
+        <div class="track-stage"><canvas class="placeholder-canvas"></canvas></div>
+      </div>
+
+      <!-- UBLOX -->
+      <div class="track off" style="--accent: var(--ublox);" data-inst="ublox">
+        <div class="track-ctrl">
+          <div class="num">04</div>
+          <div class="label">I-04 · NAV</div>
+          <div class="name">UBLOX Satellites</div>
+          <div class="rowbtn">
+            <div class="tbtn" title="Enable">ON</div>
+            <div class="tbtn mute" title="Mute">M</div>
+            <div class="tbtn" title="Solo">S</div>
+            <div class="tbtn" title="Record">●</div>
+          </div>
+          <div class="stats">
+            <div><span class="k">SV</span><span class="v">—</span></div>
+          </div>
+        </div>
+        <div class="track-stage"><canvas class="placeholder-canvas"></canvas></div>
+      </div>
+
+      <!-- Geiger -->
+      <div class="track off" style="--accent: var(--geiger);" data-inst="geiger">
+        <div class="track-ctrl">
+          <div class="num">05</div>
+          <div class="label">I-05 · ENV</div>
+          <div class="name">Geiger Counter</div>
+          <div class="rowbtn">
+            <div class="tbtn" title="Enable">ON</div>
+            <div class="tbtn mute" title="Mute">M</div>
+            <div class="tbtn" title="Solo">S</div>
+            <div class="tbtn" title="Record">●</div>
+          </div>
+          <div class="stats">
+            <div><span class="k">CPS</span><span class="v">—</span></div>
+          </div>
+        </div>
+        <div class="track-stage"><canvas class="placeholder-canvas"></canvas></div>
+      </div>
+
+      <!-- Audio -->
+      <div class="track off" style="--accent: var(--audio);" data-inst="audio">
+        <div class="track-ctrl">
+          <div class="num">06</div>
+          <div class="label">I-06 · ENV</div>
+          <div class="name">Audio</div>
+          <div class="rowbtn">
+            <div class="tbtn" title="Enable">ON</div>
+            <div class="tbtn mute" title="Mute">M</div>
+            <div class="tbtn" title="Solo">S</div>
+            <div class="tbtn" title="Record">●</div>
+          </div>
+          <div class="stats">
+            <div><span class="k">RMS</span><span class="v">—</span></div>
+          </div>
+        </div>
+        <div class="track-stage"><canvas class="placeholder-canvas"></canvas></div>
+      </div>
+
+      <!-- Video -->
+      <div class="track off" style="--accent: var(--video);" data-inst="video">
+        <div class="track-ctrl">
+          <div class="num">07</div>
+          <div class="label">I-07 · ENV</div>
+          <div class="name">Video</div>
+          <div class="rowbtn">
+            <div class="tbtn" title="Enable">ON</div>
+            <div class="tbtn mute" title="Mute">M</div>
+            <div class="tbtn" title="Solo">S</div>
+            <div class="tbtn" title="Record">●</div>
+          </div>
+          <div class="stats">
+            <div><span class="k">MOT</span><span class="v">—</span></div>
+          </div>
+        </div>
+        <div class="track-stage"><canvas class="placeholder-canvas"></canvas></div>
+      </div>
+
+      <!-- NLP -->
+      <div class="track off" style="--accent: var(--nlp);" data-inst="nlp">
+        <div class="track-ctrl">
+          <div class="num">08</div>
+          <div class="label">I-08 · INF</div>
+          <div class="name">NLP</div>
+          <div class="rowbtn">
+            <div class="tbtn" title="Enable">ON</div>
+            <div class="tbtn mute" title="Mute">M</div>
+            <div class="tbtn" title="Solo">S</div>
+            <div class="tbtn" title="Record">●</div>
+          </div>
+          <div class="stats">
+            <div><span class="k">TOK</span><span class="v">—</span></div>
+          </div>
+        </div>
+        <div class="track-stage"><canvas class="placeholder-canvas"></canvas></div>
+      </div>
+
+    </section>
+  </main>
+
+  <!-- ============ STATUS ============ -->
+  <footer class="status">
+    <div class="seg">CORE <span class="v">C++ 0.14ms</span></div>
+    <div class="seg">UI <span class="v">C# / Skia 60fps</span></div>
+    <div class="seg">HEURISTICS <span class="v">Python idle</span></div>
+    <div class="seg">BUS <span class="v">tcp://127.0.0.1:5556</span></div>
+    <div class="seg push">EVENTS <span class="v" id="total-events">0</span></div>
+    <div class="seg">T+ <span class="v" id="session-time">00:00:00</span></div>
+  </footer>
+
+</div>
+
+<div class="tooltip" id="tooltip"></div>
+
+<script>
+// ============================================================================
+// SIMULATION — stand-in for the live C#/C++ scanner. Same event shape.
+// ============================================================================
+const NOW_START = performance.now();
+const SESSION_START = Date.now();
+
+const MOCK_APS = [
+  { ssid:'TELUS4829',        bssid:'A4:2B:8C:11:02:D4', band:'5',   baseline:-42, jitter:3 },
+  { ssid:'BELL_5G_EXT',      bssid:'8C:04:FF:19:AA:01', band:'5',   baseline:-51, jitter:5 },
+  { ssid:'ShawMobile-9921',  bssid:'1C:3B:F3:7E:88:A2', band:'2.4', baseline:-58, jitter:3 },
+  { ssid:'',                 bssid:'DA:A1:19:0C:44:E8', band:'5',   baseline:-47, jitter:7, hidden:true },
+  { ssid:'eduroam',          bssid:'E4:38:7E:52:00:11', band:'5',   baseline:-63, jitter:4 },
+  { ssid:'CoffeeShop_Free',  bssid:'20:0C:C8:FD:9A:12', band:'2.4', baseline:-71, jitter:6 },
+  { ssid:'NETGEAR_7',        bssid:'C4:04:15:88:2B:FE', band:'2.4', baseline:-76, jitter:4 },
+  { ssid:'',                 bssid:'F0:9F:C2:8A:11:C0', band:'5',   baseline:-55, jitter:8, hidden:true },
+  { ssid:'linksys-guest',    bssid:'48:F8:B3:62:0E:99', band:'2.4', baseline:-68, jitter:5 },
+  { ssid:'XFINITY_OPEN',     bssid:'00:25:00:FF:1A:3B', band:'5',   baseline:-81, jitter:5 },
+  { ssid:'CGI_CORP',         bssid:'70:3A:CB:40:5F:AA', band:'5',   baseline:-45, jitter:3 },
+  { ssid:'HP-Setup-9D',      bssid:'B4:B6:86:AE:9D:77', band:'2.4', baseline:-62, jitter:4 },
+];
+
+const apState = new Map();
+MOCK_APS.forEach(ap => apState.set(ap.bssid, { ...ap, history:[], current:ap.baseline }));
+
+function emitScanTick() {
+  const t = performance.now() - NOW_START;
+  apState.forEach(ap => {
+    const prev = ap.current;
+    // tighter, smoother random walk so the waveform reads as a real trace
+    const drift = (Math.random() - 0.5) * ap.jitter;
+    const next = Math.max(-95, Math.min(-25, ap.baseline + drift));
+    ap.current = next;
+    ap.history.push({ t, dbm:next, delta:next - prev });
+    if (ap.history.length > 1200) ap.history.shift();
+  });
+  totalEvents += apState.size;
+}
+
+// ============================================================================
+// RENDER
+// ============================================================================
+const WINDOW_MS = 60_000;
+const DB_MIN = -95;
+const DB_MAX = -25;
+
+function setupCanvas(canvas) {
+  const dpr = window.devicePixelRatio || 1;
+  const r = canvas.getBoundingClientRect();
+  canvas.width = r.width * dpr;
+  canvas.height = r.height * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.scale(dpr, dpr);
+  return { ctx, w:r.width, h:r.height };
+}
+
+function drawTrackGrid(ctx, w, h, opts={}) {
+  const { showYLabels=true, showXLabels=false, marginL=36 } = opts;
+  ctx.strokeStyle = 'rgba(138, 154, 145, 0.06)';
+  ctx.lineWidth = 1;
+
+  // horizontal dBm lines at -30, -45, -60, -75, -90
+  const lines = [-30, -45, -60, -75, -90];
+  ctx.font = '8px "JetBrains Mono", monospace';
+  ctx.fillStyle = 'rgba(138, 154, 145, 0.45)';
+  ctx.textBaseline = 'middle';
+  lines.forEach(db => {
+    const y = dbToY(db, h) + 0.5;
+    ctx.beginPath();
+    ctx.moveTo(marginL, y);
+    ctx.lineTo(w, y);
+    ctx.stroke();
+    if (showYLabels) ctx.fillText(`${db}`, 4, y);
+  });
+
+  // vertical time gridlines every 10s
+  ctx.strokeStyle = 'rgba(138, 154, 145, 0.04)';
+  ctx.textBaseline = 'top';
+  for (let sec = 0; sec <= 60; sec += 10) {
+    const x = Math.round(marginL + (1 - sec/60) * (w - marginL)) + 0.5;
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, h);
+    ctx.stroke();
+    if (showXLabels && sec > 0 && sec < 60) {
+      ctx.fillStyle = 'rgba(138, 154, 145, 0.4)';
+      ctx.fillText(`-${sec}s`, x + 3, h - 11);
+    }
+  }
+}
+
+function tToX(t, nowT, w, marginL=36) {
+  const age = nowT - t;
+  return marginL + (1 - age / WINDOW_MS) * (w - marginL);
+}
+function dbToY(db, h, pad=4) {
+  const r = (DB_MAX - db) / (DB_MAX - DB_MIN);
+  return pad + r * (h - pad*2);
+}
+
+// ---------------------------------------------------------------------------
+// Hovered state (shared between wifi track + master)
+// ---------------------------------------------------------------------------
+let hovered = null;
+let mouse = { canvas:null, x:-1, y:-1 };
+const tooltip = document.getElementById('tooltip');
+
+// ---------------------------------------------------------------------------
+// Render WiFi track — the defined waveform per-AP
+// ---------------------------------------------------------------------------
+const wifiCanvas = document.getElementById('wifi-canvas');
+
+function renderWifi() {
+  const { ctx, w, h } = setupCanvas(wifiCanvas);
+  const nowT = performance.now() - NOW_START;
+  const marginL = 36;
+
+  ctx.fillStyle = '#0d1110';
+  ctx.fillRect(0, 0, w, h);
+  drawTrackGrid(ctx, w, h, { showYLabels:true, showXLabels:false, marginL });
+
+  // Each AP is its OWN defined waveform: polyline connecting its dBm points.
+  // Points are plotted east across time, Y is exact dBm.
+  apState.forEach(ap => {
+    const pts = ap.history.filter(p => nowT - p.t < WINDOW_MS);
+    if (pts.length < 1) return;
+
+    // stroke: solid defined line per AP
+    ctx.strokeStyle = 'rgba(74, 222, 128, 0.55)';
+    ctx.lineWidth = 1.25;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    pts.forEach((p, i) => {
+      const x = tToX(p.t, nowT, w, marginL);
+      const y = dbToY(p.dbm, h);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+
+    // dots on each sample — the "event" marker, sized so it reads crisp
+    pts.forEach((p, i) => {
+      const x = tToX(p.t, nowT, w, marginL);
+      const y = dbToY(p.dbm, h);
+      const isHead = (i === pts.length - 1);
+      if (isHead) {
+        ctx.fillStyle = 'rgba(74, 222, 128, 0.22)';
+        ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI*2); ctx.fill();
+        ctx.fillStyle = '#4ade80';
+        ctx.beginPath(); ctx.arc(x, y, 2.2, 0, Math.PI*2); ctx.fill();
+      } else {
+        ctx.fillStyle = 'rgba(74, 222, 128, 0.75)';
+        ctx.beginPath(); ctx.arc(x, y, 1.6, 0, Math.PI*2); ctx.fill();
+      }
+    });
+  });
+
+  // hover detection only for the WiFi canvas
+  if (mouse.canvas === wifiCanvas) {
+    hovered = null;
+    let bestD = 8;
+    apState.forEach(ap => {
+      ap.history.forEach(p => {
+        const age = nowT - p.t;
+        if (age > WINDOW_MS) return;
+        const x = tToX(p.t, nowT, w, marginL);
+        const y = dbToY(p.dbm, h);
+        const dx = x - mouse.x, dy = y - mouse.y;
+        const d = Math.hypot(dx, dy);
+        if (d < bestD) { bestD = d; hovered = { ap, point:p, x, y }; }
+      });
+    });
+
+    if (hovered) {
+      // highlight ring
+      ctx.strokeStyle = '#4ade80';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(hovered.x, hovered.y, 5, 0, Math.PI*2); ctx.stroke();
+      // crosshair
+      ctx.setLineDash([2, 3]);
+      ctx.strokeStyle = 'rgba(74,222,128,0.35)';
+      ctx.beginPath();
+      ctx.moveTo(hovered.x, 0); ctx.lineTo(hovered.x, h);
+      ctx.moveTo(marginL, hovered.y); ctx.lineTo(w, hovered.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      renderTooltip();
+    } else {
+      tooltip.classList.remove('visible');
+    }
+  }
+
+  // playhead at right edge
+  ctx.strokeStyle = 'rgba(216, 228, 220, 0.4)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(w - 0.5, 0); ctx.lineTo(w - 0.5, h);
+  ctx.stroke();
+}
+
+function renderTooltip() {
+  const { ap, point } = hovered;
+  const ssid = ap.hidden ? '‹ hidden SSID ›' : ap.ssid;
+  const hist = ap.history.slice(-12).reverse();
+  tooltip.innerHTML = `
+    <div class="tt-head">
+      <div>
+        <div class="tt-ssid">${ssid}</div>
+        <div class="tt-bssid">${ap.bssid}</div>
+      </div>
+      <div class="tt-now">${point.dbm.toFixed(1)} dBm</div>
+    </div>
+    <div class="tt-meta">
+      <div class="k">Band</div><div class="v">${ap.band} GHz</div>
+      <div class="k">Samples</div><div class="v">${ap.history.length}</div>
+      <div class="k">T+</div><div class="v">${(point.t/1000).toFixed(3)}s</div>
+    </div>
+    <div class="tt-hlbl">Recent samples · Δ dBm</div>
+    <div class="tt-hist">
+      ${hist.map(p => {
+        const cls = p.delta > 0.2 ? 'up' : p.delta < -0.2 ? 'down' : 'flat';
+        const sign = p.delta > 0 ? '+' : '';
+        const ts = new Date(SESSION_START + p.t).toISOString().substr(14, 9);
+        return `<div class="tt-row">
+          <span class="ts">${ts}</span>
+          <span class="dbm">${p.dbm.toFixed(1)}</span>
+          <span class="d ${cls}">${sign}${p.delta.toFixed(2)}</span>
+        </div>`;
+      }).join('')}
+    </div>`;
+  tooltip.classList.add('visible');
+  // pin near cursor in viewport
+  const r = wifiCanvas.getBoundingClientRect();
+  let left = r.left + hovered.x + 14;
+  let top  = r.top  + hovered.y + 14;
+  const tr = tooltip.getBoundingClientRect();
+  if (left + tr.width > window.innerWidth) left = r.left + hovered.x - tr.width - 14;
+  if (top + tr.height > window.innerHeight) top = r.top + hovered.y - tr.height - 14;
+  tooltip.style.left = left + 'px';
+  tooltip.style.top  = top  + 'px';
+}
+
+// ---------------------------------------------------------------------------
+// Render Master score — overlay of all ACTIVE instruments
+// ---------------------------------------------------------------------------
+const masterCanvas = document.getElementById('master-canvas');
+
+function renderMaster() {
+  const { ctx, w, h } = setupCanvas(masterCanvas);
+  const nowT = performance.now() - NOW_START;
+  const marginL = 44;
+
+  ctx.fillStyle = '#0f1311';
+  ctx.fillRect(0, 0, w, h);
+
+  // Grid with labels (this is the main readout)
+  ctx.strokeStyle = 'rgba(138, 154, 145, 0.08)';
+  ctx.lineWidth = 1;
+  ctx.font = '9px "JetBrains Mono", monospace';
+  ctx.fillStyle = 'rgba(138, 154, 145, 0.55)';
+  ctx.textBaseline = 'middle';
+
+  // dBm labels
+  [-30,-40,-50,-60,-70,-80,-90].forEach(db => {
+    const y = dbToY(db, h, 14) + 0.5;
+    ctx.beginPath();
+    ctx.moveTo(marginL, y); ctx.lineTo(w, y);
+    ctx.stroke();
+    ctx.fillText(`${db} dBm`, 4, y);
+  });
+
+  // time labels (every 10s)
+  ctx.textBaseline = 'top';
+  for (let sec = 0; sec <= 60; sec += 10) {
+    const x = Math.round(marginL + (1 - sec/60) * (w - marginL)) + 0.5;
+    ctx.beginPath();
+    ctx.moveTo(x, 14); ctx.lineTo(x, h);
+    ctx.stroke();
+    if (sec > 0 && sec < 60) {
+      ctx.fillStyle = 'rgba(138, 154, 145, 0.45)';
+      ctx.fillText(`-${sec}s`, x + 4, 2);
+    }
+  }
+
+  // Plot each active instrument. For the prototype: only WiFi active.
+  apState.forEach(ap => {
+    const pts = ap.history.filter(p => nowT - p.t < WINDOW_MS);
+    if (pts.length < 2) return;
+    ctx.strokeStyle = 'rgba(74, 222, 128, 0.7)';
+    ctx.lineWidth = 1.1;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    pts.forEach((p, i) => {
+      const x = tToX(p.t, nowT, w, marginL);
+      const y = dbToY(p.dbm, h, 14);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+
+    // subtle dot on the head
+    const last = pts[pts.length - 1];
+    const lx = tToX(last.t, nowT, w, marginL);
+    const ly = dbToY(last.dbm, h, 14);
+    ctx.fillStyle = 'rgba(74,222,128,0.25)';
+    ctx.beginPath(); ctx.arc(lx, ly, 4, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#4ade80';
+    ctx.beginPath(); ctx.arc(lx, ly, 1.8, 0, Math.PI*2); ctx.fill();
+  });
+
+  // playhead
+  ctx.strokeStyle = 'rgba(216, 228, 220, 0.5)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(w - 0.5, 14); ctx.lineTo(w - 0.5, h);
+  ctx.stroke();
+
+  // legend chip
+  ctx.font = '9px "JetBrains Mono", monospace';
+  ctx.textBaseline = 'top';
+  ctx.fillStyle = '#4ade80';
+  ctx.fillRect(marginL + 4, 4, 10, 2);
+  ctx.fillStyle = 'rgba(216, 228, 220, 0.85)';
+  ctx.fillText(`WIFI · ${apState.size} APs`, marginL + 18, 2);
+}
+
+// ---------------------------------------------------------------------------
+// Placeholder canvases for inactive instruments (just the grid)
+// ---------------------------------------------------------------------------
+function renderPlaceholders() {
+  document.querySelectorAll('.placeholder-canvas').forEach(cv => {
+    const { ctx, w, h } = setupCanvas(cv);
+    ctx.fillStyle = '#0d1110';
+    ctx.fillRect(0, 0, w, h);
+    drawTrackGrid(ctx, w, h, { showYLabels:false });
+    ctx.fillStyle = 'rgba(138,154,145,0.3)';
+    ctx.font = '9px "JetBrains Mono", monospace';
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'center';
+    ctx.fillText('— INSTRUMENT DISABLED —', w/2, h/2);
+    ctx.textAlign = 'left';
+  });
+}
+
+// ============================================================================
+// TICK
+// ============================================================================
+let totalEvents = 0;
+let lastTick = 0;
+function tick(now) {
+  if (now - lastTick > 400) {
+    emitScanTick();
+    lastTick = now;
+
+    document.getElementById('ap-count').textContent = apState.size;
+    const strongest = [...apState.values()].reduce((a,b)=>a.current>b.current?a:b);
+    document.getElementById('strongest').textContent = Math.round(strongest.current);
+    document.getElementById('total-events').textContent = totalEvents.toLocaleString();
+  }
+
+  renderWifi();
+  renderMaster();
+  updateClocks();
+  requestAnimationFrame(tick);
+}
+
+function updateClocks() {
+  const d = new Date();
+  const hh = String(d.getUTCHours()).padStart(2,'0');
+  const mm = String(d.getUTCMinutes()).padStart(2,'0');
+  const ss = String(d.getUTCSeconds()).padStart(2,'0');
+  const ms = String(d.getUTCMilliseconds()).padStart(3,'0');
+  document.getElementById('utc-clock').textContent = `${hh}:${mm}:${ss}.${ms}Z`;
+  const sess = Math.floor((Date.now() - SESSION_START) / 1000);
+  const sh = String(Math.floor(sess/3600)).padStart(2,'0');
+  const sm = String(Math.floor(sess/60)%60).padStart(2,'0');
+  const sss = String(sess%60).padStart(2,'0');
+  document.getElementById('session-time').textContent = `${sh}:${sm}:${sss}`;
+}
+
+// ============================================================================
+// Mouse + interactions
+// ============================================================================
+wifiCanvas.addEventListener('mousemove', e => {
+  const r = wifiCanvas.getBoundingClientRect();
+  mouse = { canvas:wifiCanvas, x:e.clientX - r.left, y:e.clientY - r.top };
+});
+wifiCanvas.addEventListener('mouseleave', () => {
+  mouse = { canvas:null, x:-1, y:-1 };
+  tooltip.classList.remove('visible');
+});
+
+// Toggle tracks with ON button
+document.querySelectorAll('.track').forEach(track => {
+  const onBtn = track.querySelector('.tbtn:first-child');
+  onBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    track.classList.toggle('on');
+    track.classList.toggle('off');
+    onBtn.classList.toggle('on');
+  });
+});
+
+// ============================================================================
+// Resizer — drag to resize master score
+// ============================================================================
+const resizer = document.getElementById('resizer');
+const master = document.getElementById('master');
+let dragging = false;
+let startY = 0; let startH = 0;
+resizer.addEventListener('mousedown', e => {
+  dragging = true;
+  startY = e.clientY;
+  startH = master.getBoundingClientRect().height;
+  document.body.style.cursor = 'row-resize';
+  document.body.style.userSelect = 'none';
+});
+document.addEventListener('mousemove', e => {
+  if (!dragging) return;
+  const dy = e.clientY - startY;
+  const h = Math.max(120, Math.min(window.innerHeight * 0.6, startH + dy));
+  master.style.height = h + 'px';
+});
+document.addEventListener('mouseup', () => {
+  dragging = false;
+  document.body.style.cursor = '';
+  document.body.style.userSelect = '';
+});
+
+// ============================================================================
+// START
+// ============================================================================
+for (let i = 0; i < 80; i++) emitScanTick();   // seed 80 samples
+renderPlaceholders();
+requestAnimationFrame(tick);
+window.addEventListener('resize', renderPlaceholders);
+</script>
+
+</body>
+</html>
