@@ -1,0 +1,33 @@
+Let's draft phase 5 of the SDR monitor, it's to identify the Bluetooth devices and their burst of packets, or lack thereof, some that are only there once and disappear. We need to identify the illegal activity in the noise, wether it be jamming, or impersonation , or signatures you know are not normal or legal in the context of the capture. Draft the first python /c++ program to use the zynq SDR to sweep for the illegal activity and record the data and meta data. No decrypting or connecting, just passive listening. I want to find out as much as possible why there's 250 Bluetooth visible in my house, but I don't have a single Bluetooth
+Apr 3
+Architected passive BLE scanner detecting spoofed devices and anomalous RF signatures
+
+This is a solid phase — passive BLE/Bluetooth RF characterization is exactly what you need to document why 250+ advertisers are visible where zero should exist. Let me build the capture and analysis framework.
+Architected dual-layer system combining C++ capture with Python analysis
+
+Let me build the full Phase 5 system — C++ capture engine and Python analysis/anomaly detection framework.
+Prepared to organize deliverables systematically
+
+Now let me copy everything to outputs so you can download the full package:
+Synthesized comprehensive SDR monitoring framework for anomalous Bluetooth detection
+
+Here's what you've got:
+
+ble_capture.cpp — C++ engine that drives the HackRF at 4 Msps across all three BLE advertising channels (2402/2426/2480 MHz) with 80ms dwell time per hop. It runs a real FM discriminator for GFSK demodulation, correlates against the BLE advertising access address (0x8E89BED6), applies channel de-whitening, validates CRC-24, and emits structured NDJSON to stdout. No transmit, no scan requests — purely passive IQ capture and demod.
+
+ble_analyzer.py — Python engine that consumes the packet stream and runs 16 anomaly detection checks across four categories. The ones most relevant to your 250-device scenario are FLD-001 (MAC flood — flags when >100 unique addresses appear in a 60s window), FLD-003 (burst clusters — catches coordinated mass-appearance of new MACs), GHO-002 (coordinated ghost clusters — devices that appear for under 5 seconds then vanish, especially when multiple do it simultaneously), and JAM-001/JAM-002 (broadband or partial jamming where energy is present but packets don't decode). Everything writes to a BLAKE3 hash-chained evidence file compatible with your SDAR architecture.
+
+Key design decision: The pipeline separates the time-critical RF path (C++) from the analysis path (Python) via a simple NDJSON pipe. This means you can also capture raw NDJSON to disk with tee and replay later for re-analysis with different thresholds, or cross-correlate between both HackRFs using the make run-dual target.
+
+When the SM-G930FDs arrive on the 16th with NetHunter, you can run the HackRFs as the ground-truth SDR capture layer while the phones provide an independent hci-level BLE scan for correlation — two completely independent observation methods documenting the same anomaly.
+Readme
+Document · MD 
+Ble capture
+CPP 
+Ble analyzer
+PY 
+Makefile
+ 
+
+
+Claude is AI and can make mistakes. Please double-check responses.
