@@ -1,0 +1,84 @@
+# Phase 5 — BLE Passive RF Monitor
+
+## CTW SDR Forensic Platform
+
+Passive BLE advertising channel monitor and anomaly detection system. Captures raw IQ data from HackRF SDR, demodulates GFSK on BLE advertising channels 37/38/39, extracts advertising PDUs, and runs real-time anomaly detection to identify illegal RF activity including jamming, MAC flooding, address impersonation, and coordinated ghost device clusters.
+
+**No decryption. No connection attempts. No active transmission. Passive receive only.**
+
+## Architecture
+
+The system is a two-stage pipeline:
+
+```
+HackRF → [ble_capture (C++)] → NDJSON pipe → [ble_analyzer (Python)] → Evidence Chain
+               ↓                                       ↓
+         IQ capture at 4 Msps                   Device profiles
+         GFSK demodulation                      Anomaly detection (16 codes)
+         BLE PDU extraction                     BLAKE3 hash-chained evidence
+         Channel hopping (37/38/39)             Forensic report generation
+```
+
+**ble_capture.cpp** handles the time-critical RF path: HackRF IQ capture at 4 Msps, FM discriminator GFSK demodulation, BLE access address correlation, PDU extraction with CRC-24 validation, and channel de-whitening. Outputs structured NDJSON records to stdout.
+
+**ble_analyzer.py** consumes the packet stream, builds per-device temporal profiles, and runs 16 anomaly detection checks covering four threat categories: jamming (JAM-001 through JAM-003), flooding (FLD-001 through FLD-003), impersonation (IMP-001 through IMP-003), and structural violations (GHO, STR, PRO codes). All findings are logged to a BLAKE3 hash-chained evidence file compatible with the SDAR forensic architecture.
+
+## Anomaly Detection Codes
+
+| Code    | Severity | Detection |
+|---------|----------|-----------|
+| JAM-001 | CRITICAL | Broadband energy present, zero decodable packets |
+| JAM-002 | HIGH     | >80% corrupt packet ratio under elevated energy |
+| JAM-003 | HIGH     | Single channel elevated >15 dB above other adv channels |
+| FLD-001 | CRITICAL | >100 unique MAC addresses in 60-second window |
+| FLD-002 | HIGH     | Device advertising below BLE spec minimum interval |
+| FLD-003 | HIGH     | >10 new MAC addresses appearing in 2-second burst |
+| IMP-001 | CRITICAL | Carrier frequency offset shift on same MAC (radio swap) |
+| IMP-002 | MEDIUM   | Public address claims unregistered IEEE OUI |
+| IMP-003 | MEDIUM   | Same address sending conflicting PDU types |
+| GHO-001 | LOW      | Device seen <10 times in <5s lifespan, then vanishes |
+| GHO-002 | CRITICAL | 5+ ghost devices appearing within 10-second window |
+| STR-001 | MEDIUM   | RSSI exceeds expected BLE power class limits |
+| STR-002 | MEDIUM   | Carrier frequency offset outside normal tolerance |
+| PRO-001 | HIGH     | Reserved PDU type fields in use |
+| PRO-002 | MEDIUM   | Malformed BLE AD structure in payload |
+| PRO-003 | MEDIUM   | Extended advertising indicators in non-extended context |
+
+## Build & Run
+
+```bash
+# Install dependencies (Kali/Debian/Ubuntu)
+make install-deps
+
+# Build C++ capture engine
+make
+
+# Run single-SDR capture (pipe to analyzer)
+make run
+
+# Run dual-SDR symmetric capture (Mode A peer test)
+make run-dual
+
+# Replay saved capture for re-analysis
+make replay FILE=captured_data.ndjson
+
+# Quick test with synthetic data
+make test
+```
+
+## Dual-SDR Deployment (Mode A)
+
+With both HackRF units, run symmetric capture from two spatial positions to enable triangulation correlation in post-processing. Each SDR produces its own evidence chain. Cross-reference timestamps and RSSI measurements between chains to establish signal directionality.
+
+## Evidence Chain Format
+
+Each evidence file is NDJSON with BLAKE3 hash chaining (SHA-256 fallback). Every record includes `_seq`, `_prev_hash`, and `_hash` fields forming an append-only tamper-evident log. Record types: `session_start`, `packet`, `anomaly`, `device_summary`, `session_stats`, `session_end`.
+
+Compatible with SDAR forensic evidence containers and meets SWGDE/ISO 27037 chain-of-custody requirements when wrapped in EWF containers.
+
+## Operational Context
+
+This tool addresses the documented observation of 216+ simultaneous BLE advertisements in a residential environment with zero BLE-capable devices. The anomaly detection thresholds are calibrated for this scenario — a clean residential baseline should show near-zero unique BLE advertisers.
+
+---
+(c) 2026 Christopher T. Williams — CTW SDR Forensic Platform
