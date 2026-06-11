@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>FS-5000 — Your Baseline, Your Standard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0d1117;color:#e6edf3;font-family:'Segoe UI',system-ui,monospace;padding:26px}
+h1{color:#58a6ff;font-size:1.25rem;margin-bottom:4px}
+.sub{color:#8b949e;font-size:.78rem;margin-bottom:18px;line-height:1.8}
+.sub b{color:#e6edf3}
+.baseline-box{background:#0d1a0d;border:1px solid #3fb950;border-radius:9px;
+  padding:16px 20px;margin-bottom:16px;display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px}
+.bl-item{}
+.bl-label{color:#8b949e;font-size:.67rem;text-transform:uppercase;letter-spacing:.05em;margin-bottom:2px}
+.bl-val{font-size:1.25rem;font-weight:700;color:#3fb950}
+.bl-note{color:#6a9e6a;font-size:.68rem;margin-top:1px}
+.panel{background:#161b22;border:1px solid #30363d;border-radius:9px;padding:18px;margin-bottom:14px}
+.panel.spike-panel{border-color:#f85149;background:#100808}
+.ph{font-size:.88rem;margin-bottom:12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.ph-title{color:#58a6ff}
+.spike-panel .ph-title{color:#f85149}
+.badge{font-size:.67rem;padding:2px 7px;border-radius:8px;font-weight:700}
+.b-ok{background:#1a3a2a;color:#3fb950}
+.b-alert{background:#3a1a1a;color:#f85149}
+.b-info{background:#1a2a3a;color:#58a6ff}
+.b-warn{background:#3d2a0a;color:#f0883e}
+.cbox{position:relative;height:240px}
+.cbox.tall{height:320px}
+.note{color:#8b949e;font-size:.73rem;margin-top:10px;padding:9px 13px;
+  background:#0d1117;border-radius:5px;border-left:3px solid #30363d;line-height:1.55}
+.note b{color:#e6edf3}
+.note .ok{color:#3fb950}
+.note .rd{color:#f85149}
+.note .or{color:#f0883e}
+.sigma-legend{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
+.sl{display:flex;align-items:center;gap:6px;font-size:.73rem;color:#8b949e}
+.sl-dot{width:12px;height:3px;border-radius:2px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}
+.findings{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:14px}
+.fcard{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px 14px}
+.fcard.green{border-color:#3fb950;background:#0b170b}
+.fcard.red{border-color:#f85149;background:#170b0b}
+.fcard.blue{border-color:#58a6ff;background:#0b0f17}
+.fcard h3{font-size:.8rem;margin-bottom:5px}
+.fcard p{color:#8b949e;font-size:.72rem;line-height:1.5}
+.fcard p b{color:#e6edf3}
+footer{color:#484f58;font-size:.68rem;text-align:center;margin-top:18px;line-height:1.6}
+</style>
+</head>
+<body>
+
+<h1>&#9762; FS-5000 — Your Baseline · Your Standard</h1>
+<div class="sub">
+  Perris, CA &nbsp;·&nbsp; J321 GM tube &nbsp;·&nbsp;
+  <b>220 clean pre-event readings</b> establish your site-specific baseline &nbsp;·&nbsp;
+  Thresholds derived from <b>your measured data only</b>
+</div>
+
+<div class="baseline-box">
+  <div class="bl-item">
+    <div class="bl-label">Your Floor</div>
+    <div class="bl-val">0.0400</div>
+    <div class="bl-note">µSv/h · measured minimum</div>
+  </div>
+  <div class="bl-item">
+    <div class="bl-label">Your Mean</div>
+    <div class="bl-val">0.1329</div>
+    <div class="bl-note">µSv/h · 220-record average</div>
+  </div>
+  <div class="bl-item">
+    <div class="bl-label">Std Deviation</div>
+    <div class="bl-val">0.0494</div>
+    <div class="bl-note">µSv/h · natural variation</div>
+  </div>
+  <div class="bl-item">
+    <div class="bl-label">Mean + 1σ</div>
+    <div class="bl-val">0.1823</div>
+    <div class="bl-note">µSv/h · statistically typical ceiling</div>
+  </div>
+  <div class="bl-item">
+    <div class="bl-label">Mean + 2σ</div>
+    <div class="bl-val">0.2318</div>
+    <div class="bl-note">µSv/h · investigate if sustained</div>
+  </div>
+  <div class="bl-item">
+    <div class="bl-label">Mean + 3σ</div>
+    <div class="bl-val">0.2812</div>
+    <div class="bl-note">µSv/h · anomaly threshold</div>
+  </div>
+  <div class="bl-item">
+    <div class="bl-label">Your Ceiling</div>
+    <div class="bl-val">0.2400</div>
+    <div class="bl-note">µSv/h · measured maximum (clean data)</div>
+  </div>
+  <div class="bl-item" style="border-left:2px solid #f85149;padding-left:10px">
+    <div class="bl-label" style="color:#f85149">Spike Peak</div>
+    <div class="bl-val" style="color:#f85149">38.9200</div>
+    <div class="bl-note" style="color:#a05050">µSv/h · 293× your mean · 781σ</div>
+  </div>
+</div>
+
+<div class="findings">
+  <div class="fcard green">
+    <h3 style="color:#3fb950">&#10003; Your Normal Range</h3>
+    <p>Floor <b>0.0400</b> → mean <b>0.1329</b> → ceiling <b>0.2400</b> µSv/h.
+    Established from 220 consecutive readings at your location.
+    This is your site's actual ambient — not a population average, not a lab standard.</p>
+  </div>
+  <div class="fcard blue">
+    <h3 style="color:#58a6ff">&#128200; Your Alert Thresholds</h3>
+    <p><b>Watch:</b> sustained &gt;0.2318 µSv/h (2σ above your mean)<br>
+    <b>Investigate:</b> sustained &gt;0.2812 µSv/h (3σ)<br>
+    <b>Event:</b> any reading &gt;0.4800 µSv/h (&gt;2× your ceiling)<br>
+    All defined by your data. No external standard applied.</p>
+  </div>
+  <div class="fcard red">
+    <h3 style="color:#f85149">&#9888; Event on Record</h3>
+    <p>20 consecutive readings: <b>18.44 → 38.92 µSv/h</b>.
+    <b>293× your mean. 781 standard deviations</b> above your baseline.
+    Onset &lt;1 second. Duration minimum ~20 seconds. Peak sustained ~7 seconds.
+    Profile: real sensor response, not noise.</p>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="ph">
+    <span class="ph-title">&#9889; Full 240-Record Rate Sequence — σ Bands from Your Data</span>
+    <span class="badge b-info">~1s resolution · sequence indexed</span>
+  </div>
+  <div class="sigma-legend">
+    <div class="sl"><div class="sl-dot" style="background:#3fb950"></div>Within your baseline</div>
+    <div class="sl"><div class="sl-dot" style="background:#f0883e;width:40px;height:1px;border-top:2px dashed #f0883e"></div>2σ = 0.2318 µSv/h</div>
+    <div class="sl"><div class="sl-dot" style="background:#58a6ff;width:40px;height:1px;border-top:2px dashed #58a6ff"></div>3σ = 0.2812 µSv/h</div>
+    <div class="sl"><div class="sl-dot" style="background:#f85149;width:40px;height:1px;border-top:2px dashed #f85149"></div>Mean = 0.1329 µSv/h</div>
+  </div>
+  <div class="cbox tall"><canvas id="fullChart"></canvas></div>
+  <div class="note">
+    Y-axis capped at 1.0 µSv/h to show baseline detail — spike extends to 38.92 µSv/h (off chart, indicated).
+    <b class="ok">Green bars</b> = within your baseline range.
+    <b style="color:#f85149">Red bars</b> = above your 3σ anomaly threshold.
+    Records 220–239 reach <b class="rd">38.92 µSv/h</b> — truncated to chart scale to preserve baseline visibility.
+  </div>
+</div>
+
+<div class="panel spike-panel">
+  <div class="ph">
+    <span class="ph-title">&#128680; Event Detail — Records 210–239 · Zoomed · Full Scale</span>
+    <span class="badge b-alert">PEAK 38.92 µSv/h · 293× YOUR MEAN · 781σ</span>
+  </div>
+  <div class="cbox tall"><canvas id="spikeChart"></canvas></div>
+  <div class="note">
+    Full-scale view. <b>Pre-event baseline</b> (records 210–219):
+    <b class="ok">0.0600 → 0.1400 µSv/h</b> — at your floor, dropping before onset.
+    <b class="rd">Onset</b> (record 220): single-sample jump from 0.0600 to <b class="rd">18.44 µSv/h</b>.
+    Rise time: &lt;1 second.
+    <b class="rd">Peak</b>: 38.92 µSv/h, sustained records 228–234 (~7 seconds).
+    <b>Return</b>: descending at record 239 (22.18 µSv/h) — buffer ended, full recovery not captured.
+    <br><br>
+    Sigma lines are drawn from <b>your measured data only</b>. The event is
+    <b class="rd">781 standard deviations</b> above your measured mean —
+    a statistical impossibility under normal conditions.
+  </div>
+</div>
+
+<footer>
+  Baseline established from 220 measured readings at your location · Perris, CA · Bosean FS-5000 J321 GM tube<br>
+  Mean: 0.1329 µSv/h · σ: 0.0494 µSv/h · Floor: 0.0400 · Ceiling (clean): 0.2400<br>
+  Thresholds are site-specific and data-derived · No external regulatory standard applied<br>
+  Spike: 38.92 µSv/h · 293× mean · 781σ · ~20s duration · onset &lt;1s · J321 tube confirmed response
+</footer>
+
+<script>
+const RATE  = [{"x": 0, "y": 0.24}, {"x": 1, "y": 0.23}, {"x": 2, "y": 0.23}, {"x": 3, "y": 0.21}, {"x": 4, "y": 0.19}, {"x": 5, "y": 0.17}, {"x": 6, "y": 0.17}, {"x": 7, "y": 0.15}, {"x": 8, "y": 0.14}, {"x": 9, "y": 0.13}, {"x": 10, "y": 0.11}, {"x": 11, "y": 0.1}, {"x": 12, "y": 0.09}, {"x": 13, "y": 0.08}, {"x": 14, "y": 0.08}, {"x": 15, "y": 0.08}, {"x": 16, "y": 0.09}, {"x": 17, "y": 0.09}, {"x": 18, "y": 0.1}, {"x": 19, "y": 0.11}, {"x": 20, "y": 0.13}, {"x": 21, "y": 0.14}, {"x": 22, "y": 0.16}, {"x": 23, "y": 0.17}, {"x": 24, "y": 0.16}, {"x": 25, "y": 0.16}, {"x": 26, "y": 0.15}, {"x": 27, "y": 0.16}, {"x": 28, "y": 0.16}, {"x": 29, "y": 0.17}, {"x": 30, "y": 0.07}, {"x": 31, "y": 0.09}, {"x": 32, "y": 0.09}, {"x": 33, "y": 0.1}, {"x": 34, "y": 0.1}, {"x": 35, "y": 0.11}, {"x": 36, "y": 0.11}, {"x": 37, "y": 0.12}, {"x": 38, "y": 0.12}, {"x": 39, "y": 0.12}, {"x": 40, "y": 0.12}, {"x": 41, "y": 0.11}, {"x": 42, "y": 0.11}, {"x": 43, "y": 0.11}, {"x": 44, "y": 0.11}, {"x": 45, "y": 0.11}, {"x": 46, "y": 0.11}, {"x": 47, "y": 0.11}, {"x": 48, "y": 0.11}, {"x": 49, "y": 0.1}, {"x": 50, "y": 0.1}, {"x": 51, "y": 0.1}, {"x": 52, "y": 0.09}, {"x": 53, "y": 0.09}, {"x": 54, "y": 0.09}, {"x": 55, "y": 0.1}, {"x": 56, "y": 0.1}, {"x": 57, "y": 0.11}, {"x": 58, "y": 0.11}, {"x": 59, "y": 0.12}, {"x": 60, "y": 0.11}, {"x": 61, "y": 0.11}, {"x": 62, "y": 0.11}, {"x": 63, "y": 0.1}, {"x": 64, "y": 0.1}, {"x": 65, "y": 0.11}, {"x": 66, "y": 0.12}, {"x": 67, "y": 0.13}, {"x": 68, "y": 0.15}, {"x": 69, "y": 0.16}, {"x": 70, "y": 0.16}, {"x": 71, "y": 0.15}, {"x": 72, "y": 0.15}, {"x": 73, "y": 0.15}, {"x": 74, "y": 0.15}, {"x": 75, "y": 0.15}, {"x": 76, "y": 0.15}, {"x": 77, "y": 0.15}, {"x": 78, "y": 0.14}, {"x": 79, "y": 0.14}, {"x": 80, "y": 0.15}, {"x": 81, "y": 0.15}, {"x": 82, "y": 0.16}, {"x": 83, "y": 0.17}, {"x": 84, "y": 0.19}, {"x": 85, "y": 0.19}, {"x": 86, "y": 0.19}, {"x": 87, "y": 0.17}, {"x": 88, "y": 0.16}, {"x": 89, "y": 0.14}, {"x": 90, "y": 0.14}, {"x": 91, "y": 0.16}, {"x": 92, "y": 0.19}, {"x": 93, "y": 0.2}, {"x": 94, "y": 0.22}, {"x": 95, "y": 0.23}, {"x": 96, "y": 0.23}, {"x": 97, "y": 0.23}, {"x": 98, "y": 0.24}, {"x": 99, "y": 0.24}, {"x": 100, "y": 0.23}, {"x": 101, "y": 0.2}, {"x": 102, "y": 0.18}, {"x": 103, "y": 0.16}, {"x": 104, "y": 0.15}, {"x": 105, "y": 0.14}, {"x": 106, "y": 0.13}, {"x": 107, "y": 0.12}, {"x": 108, "y": 0.11}, {"x": 109, "y": 0.11}, {"x": 110, "y": 0.11}, {"x": 111, "y": 0.11}, {"x": 112, "y": 0.11}, {"x": 113, "y": 0.11}, {"x": 114, "y": 0.09}, {"x": 115, "y": 0.08}, {"x": 116, "y": 0.07}, {"x": 117, "y": 0.05}, {"x": 118, "y": 0.05}, {"x": 119, "y": 0.04}, {"x": 120, "y": 0.04}, {"x": 121, "y": 0.04}, {"x": 122, "y": 0.05}, {"x": 123, "y": 0.06}, {"x": 124, "y": 0.07}, {"x": 125, "y": 0.08}, {"x": 126, "y": 0.1}, {"x": 127, "y": 0.1}, {"x": 128, "y": 0.11}, {"x": 129, "y": 0.11}, {"x": 130, "y": 0.12}, {"x": 131, "y": 0.11}, {"x": 132, "y": 0.11}, {"x": 133, "y": 0.11}, {"x": 134, "y": 0.11}, {"x": 135, "y": 0.11}, {"x": 136, "y": 0.13}, {"x": 137, "y": 0.14}, {"x": 138, "y": 0.17}, {"x": 139, "y": 0.19}, {"x": 140, "y": 0.21}, {"x": 141, "y": 0.22}, {"x": 142, "y": 0.23}, {"x": 143, "y": 0.22}, {"x": 144, "y": 0.22}, {"x": 145, "y": 0.22}, {"x": 146, "y": 0.22}, {"x": 147, "y": 0.22}, {"x": 148, "y": 0.22}, {"x": 149, "y": 0.22}, {"x": 150, "y": 0.21}, {"x": 151, "y": 0.22}, {"x": 152, "y": 0.22}, {"x": 153, "y": 0.22}, {"x": 154, "y": 0.22}, {"x": 155, "y": 0.22}, {"x": 156, "y": 0.19}, {"x": 157, "y": 0.16}, {"x": 158, "y": 0.13}, {"x": 159, "y": 0.11}, {"x": 160, "y": 0.09}, {"x": 161, "y": 0.08}, {"x": 162, "y": 0.07}, {"x": 163, "y": 0.05}, {"x": 164, "y": 0.05}, {"x": 165, "y": 0.05}, {"x": 166, "y": 0.06}, {"x": 167, "y": 0.07}, {"x": 168, "y": 0.09}, {"x": 169, "y": 0.11}, {"x": 170, "y": 0.13}, {"x": 171, "y": 0.15}, {"x": 172, "y": 0.17}, {"x": 173, "y": 0.18}, {"x": 174, "y": 0.2}, {"x": 175, "y": 0.2}, {"x": 176, "y": 0.2}, {"x": 177, "y": 0.19}, {"x": 178, "y": 0.18}, {"x": 179, "y": 0.18}, {"x": 180, "y": 0.14}, {"x": 181, "y": 0.15}, {"x": 182, "y": 0.15}, {"x": 183, "y": 0.15}, {"x": 184, "y": 0.14}, {"x": 185, "y": 0.14}, {"x": 186, "y": 0.12}, {"x": 187, "y": 0.12}, {"x": 188, "y": 0.12}, {"x": 189, "y": 0.12}, {"x": 190, "y": 0.12}, {"x": 191, "y": 0.13}, {"x": 192, "y": 0.12}, {"x": 193, "y": 0.12}, {"x": 194, "y": 0.12}, {"x": 195, "y": 0.11}, {"x": 196, "y": 0.1}, {"x": 197, "y": 0.09}, {"x": 198, "y": 0.07}, {"x": 199, "y": 0.06}, {"x": 200, "y": 0.06}, {"x": 201, "y": 0.05}, {"x": 202, "y": 0.06}, {"x": 203, "y": 0.06}, {"x": 204, "y": 0.09}, {"x": 205, "y": 0.1}, {"x": 206, "y": 0.12}, {"x": 207, "y": 0.13}, {"x": 208, "y": 0.14}, {"x": 209, "y": 0.14}, {"x": 210, "y": 0.14}, {"x": 211, "y": 0.13}, {"x": 212, "y": 0.12}, {"x": 213, "y": 0.12}, {"x": 214, "y": 0.1}, {"x": 215, "y": 0.09}, {"x": 216, "y": 0.07}, {"x": 217, "y": 0.06}, {"x": 218, "y": 0.06}, {"x": 219, "y": 0.06}, {"x": 220, "y": 18.44}, {"x": 221, "y": 21.0}, {"x": 222, "y": 26.12}, {"x": 223, "y": 28.68}, {"x": 224, "y": 28.68}, {"x": 225, "y": 31.24}, {"x": 226, "y": 36.36}, {"x": 227, "y": 36.36}, {"x": 228, "y": 38.92}, {"x": 229, "y": 38.92}, {"x": 230, "y": 38.92}, {"x": 231, "y": 38.92}, {"x": 232, "y": 38.92}, {"x": 233, "y": 38.92}, {"x": 234, "y": 38.92}, {"x": 235, "y": 36.36}, {"x": 236, "y": 31.24}, {"x": 237, "y": 28.68}, {"x": 238, "y": 26.12}, {"x": 239, "y": 22.18}];
+const MEAN  = 0.132864;
+const S1    = 0.182310;
+const S2    = 0.231757;
+const S3    = 0.281204;
+const FLOOR = 0.040000;
+const CEIL  = 0.240000;
+
+Chart.defaults.color = '#8b949e';
+Chart.defaults.borderColor = '#1e2630';
+
+const tip = {
+  backgroundColor:'#161b22',borderColor:'#30363d',borderWidth:1,
+  titleColor:'#58a6ff',bodyColor:'#e6edf3',padding:10,
+  callbacks:{
+    title: items => `Record #${items[0].label}`,
+    label: item => ` ${item.dataset.label}: ${
+      typeof item.raw === 'object' ? item.raw.y.toFixed(4) : Number(item.raw).toFixed(4)
+    } µSv/h`
+  }
+};
+
+// ── FULL CHART (capped at 1.0 for baseline visibility) ──
+const fullColors = RATE.map(r => r.y > S3 ? '#f85149' : r.y > S2 ? '#f0883e' : r.y > S1 ? '#f0d060' : '#3fb950');
+const fullCapped = RATE.map(r => ({x:r.x, y: Math.min(r.y, 1.0)}));
+
+// annotation lines
+const mkLine = (val, color) => RATE.map(r=>({x:r.x, y:val}));
+
+new Chart(document.getElementById('fullChart'), {
+  type:'bar',
+  data:{ datasets:[
+    {
+      label:'Dose Rate',
+      data: fullCapped,
+      backgroundColor: fullColors,
+      borderColor: fullColors,
+      borderWidth:0,
+      barPercentage:1.0, categoryPercentage:1.0,
+      order:1
+    },
+    {
+      label:`Mean (${MEAN.toFixed(4)})`,
+      data: mkLine(MEAN, '#f85149'),
+      type:'line', borderColor:'rgba(248,81,73,0.6)',
+      borderWidth:1.5, borderDash:[3,3], pointRadius:0, fill:false, order:2
+    },
+    {
+      label:`2σ (${S2.toFixed(4)})`,
+      data: mkLine(S2, '#f0883e'),
+      type:'line', borderColor:'rgba(240,136,62,0.7)',
+      borderWidth:1.5, borderDash:[5,4], pointRadius:0, fill:false, order:3
+    },
+    {
+      label:`3σ (${S3.toFixed(4)})`,
+      data: mkLine(S3, '#58a6ff'),
+      type:'line', borderColor:'rgba(88,166,255,0.6)',
+      borderWidth:1.5, borderDash:[5,4], pointRadius:0, fill:false, order:4
+    }
+  ]},
+  options:{
+    responsive:true, maintainAspectRatio:false,
+    interaction:{mode:'index',intersect:false},
+    plugins:{
+      legend:{display:true, labels:{color:'#8b949e',boxWidth:10,font:{size:10}}},
+      tooltip:tip
+    },
+    scales:{
+      x:{title:{display:true,text:'Record # (sequence index)',color:'#8b949e'},
+          grid:{color:'#1e2630'},ticks:{color:'#8b949e',maxTicksLimit:12}},
+      y:{title:{display:true,text:'µSv/h  (capped at 1.0)',color:'#8b949e'},
+          grid:{color:'#1e2630'},ticks:{color:'#8b949e'},
+          min:0, max:1.0}
+    }
+  }
+});
+
+// ── SPIKE DETAIL — records 210-239, full scale ──
+const spWin = RATE.slice(210, 240);
+const spColors = spWin.map(r => r.y > S3 ? '#f85149' : r.y > S2 ? '#f0883e' : '#3fb950');
+const spLines = (val) => spWin.map(r=>({x:r.x, y:val}));
+
+new Chart(document.getElementById('spikeChart'), {
+  type:'bar',
+  data:{ datasets:[
+    {
+      label:'Dose Rate',
+      data: spWin.map(r=>({x:r.x,y:r.y})),
+      backgroundColor: spColors,
+      borderColor: spColors,
+      borderWidth:0,
+      barPercentage:0.85, categoryPercentage:0.9,
+      order:1
+    },
+    {
+      label:`Mean (${MEAN.toFixed(4)})`,
+      data: spLines(MEAN),
+      type:'line', borderColor:'rgba(248,81,73,0.5)',
+      borderWidth:1.5, borderDash:[3,3], pointRadius:0, fill:false, order:2
+    },
+    {
+      label:`3σ (${S3.toFixed(4)})`,
+      data: spLines(S3),
+      type:'line', borderColor:'rgba(88,166,255,0.5)',
+      borderWidth:1.5, borderDash:[5,4], pointRadius:0, fill:false, order:3
+    },
+    {
+      label:`Your ceiling (${CEIL.toFixed(4)})`,
+      data: spLines(CEIL),
+      type:'line', borderColor:'rgba(63,185,80,0.4)',
+      borderWidth:1, borderDash:[4,3], pointRadius:0, fill:false, order:4
+    }
+  ]},
+  options:{
+    responsive:true, maintainAspectRatio:false,
+    interaction:{mode:'index',intersect:false},
+    plugins:{
+      legend:{display:true, labels:{color:'#8b949e',boxWidth:10,font:{size:10}}},
+      tooltip:tip
+    },
+    scales:{
+      x:{title:{display:true,text:'Record # (sequence index)',color:'#8b949e'},
+          grid:{color:'#1e2630'},ticks:{color:'#8b949e'}},
+      y:{title:{display:true,text:'µSv/h (full scale)',color:'#8b949e'},
+          grid:{color:'#1e2630'},ticks:{color:'#8b949e'},
+          min:0}
+    }
+  }
+});
+</script>
+</body>
+</html>
