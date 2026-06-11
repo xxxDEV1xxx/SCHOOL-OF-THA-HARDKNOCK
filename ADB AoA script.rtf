@@ -1,0 +1,175 @@
+I need a adb script that disables everything thats an attack tool on kali nethunter, and then deploying my DSL-S-elf, AoA softmac, and sentinel. the phone is the s7 samsung with kali nethunter kali-nethunter-2026.1-herolte-oui-pie-full. heres the flow for the install : AOA SOFTMAC DEPLOY One file replaced: softmac_platform_stub.c → softmac_platform_android.c. Every other file in the archive is byte-for-byte identical to your RHEL9 upload. The AoA guard, acquisition layer, ratchet cipher, crypto core, replay window, all headers — untouched. What the platform file actually fixes for ARM64 Android: CLOCK_BOOTTIME is the critical one. The RHEL9 stub used CLOCK_MONOTONIC which freezes on Exynos 8890 during CPU suspend. Since the ratchet advances on elapsed time (RC_SWAP_INTERVAL_SEC = 30), two phones that both sleep would wake up with desynchronized epochs. CLOCK_BOOTTIME includes suspend time — ratchet stays in sync across sleep cycles. softmac_get_time_us() had a bug in the stub: tv_sec * 1000001ULL + tv_nsec / 999. That accumulates roughly 1 microsecond error per second — 86 milliseconds per day. On a 30-second ratchet window that's small but it compounds. Fixed to tv_sec * 1000000ULL + tv_nsec / 1000. TUN path: Android uses /dev/tun first, not /dev/net/tun. The stub assumed the standard Linux path and would silently fail on Android. The new platform probes all three candidates. softmac_get_monotonic_sec() was missing from the stub entirely — it's called by ratchet_cipher_init() and the Mode C router sync path. Build commands inside NetHunter chroot: bashcd /sdcard/aoa_android
+Apr 15
+Architected ADB script deploying security tools and platform fixes
+
+Here's the full ADB deployment script. I'll split it into two files — the host-side ADB orchestrator and the on-device chroot build script that gets pushed and executed.
+Architected on-device build script for NetHunter chroot deployment
+
+Two scripts to use together:
+
+deploy_herolte.sh — runs on your host machine and orchestrates everything via ADB:
+
+    Preflights ADB device, confirms herolte board (universal8890), and checks your source dirs
+    Neutralises attack tools by chmod 000-ing them inside the chroot (reversible — no uninstall)
+    Pushes all three source trees to /sdcard/nh_deploy/
+    Pushes and executes ondevice_build.sh inside the chroot, streaming output to deploy_ondevice.log
+    Verifies the three final binaries exist
+
+ondevice_build.sh — runs on the S7 inside the NetHunter chroot:
+
+    Sets up bind mounts (proc/sys/dev/sdcard) needed for a working chroot build environment
+    Ensures clang, make, iproute2, etc. are installed
+    AoA Softmac: validates all four ARM64 Android fixes before compiling — CLOCK_BOOTTIME present, 1000000ULL formula, /dev/tun probing, and softmac_get_monotonic_sec() defined. Aborts with a clear message if any are missing
+    Supports both Makefile-based builds and manual clang compilation with the full source list
+    Deploys DSL-S-elf and Sentinel, with optional Sentinel autostart via /etc/profile.d/
+    Cleans up /tmp build artefacts and prints a summary
+
+Usage:
+bash
+
+# Your source layout:
+# ./aoa_android/softmac_platform_android.c  ← Android platform file (not the RHEL9 stub)
+# ./dsl_s_elf/
+# ./sentinel/
+
+chmod +x deploy_herolte.sh ondevice_build.sh
+./deploy_herolte.sh
+
+Your message got cut off right at the build commands — if you have a specific Makefile or source file list for AoA, paste it and I'll wire the exact make targets in.
+Deploy herolte
+SH 
+Ondevice build
+SH 
+
+To run code, enable code execution and file creation in Settings > Capabilities.
+
+give powershell script to execute both from win10
+Apr 15
+Deciphered request for PowerShell script executing shell scripts via ADB
+
+Drop Deploy-Herolte.ps1 in the same folder as the two bash scripts and your three source directories, then run:
+powershell
+
+# One-time: allow local scripts to run
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+
+# Run the deployer
+.\Deploy-Herolte.ps1
+
+What it handles automatically:
+Step	Detail
+ADB discovery	Checks PATH first, then 5 common SDK install locations
+Bash env	Prefers WSL, falls back to Git Bash — detects whichever is present
+Path conversion	Translates C:\Users\... → /mnt/c/... (WSL) or /c/... (Git Bash) automatically
+CRLF fix	Strips Windows line endings from both .sh files before execution so bash doesn't choke
+ADB injection	Exports ADB's Windows path into the bash session's $PATH so the shell scripts can call adb
+Phase 1	Runs deploy_herolte.sh (disables tools, pushes sources) — streamed + logged to deploy_herolte_win.log
+Phase 2	Pushes and runs ondevice_build.sh on-device via adb shell su -c — streamed + logged to deploy_ondevice_win.log
+Verification	Checks all 3 binaries exist in the chroot after build
+
+If you don't have WSL or Git Bash, WSL is the easier install: wsl --install in an admin PowerShell, reboot, done.
+Deploy-Herolte.ps1
+ 
+
+To run code, enable code execution and file creation in Settings > Capabilities.
+
+merge the softmac_nethunter module into the AoA softmac, taking great care to not ruin the cellular connection to the actual Boost provider
+Apr 15
+Reconciled function signature discrepancies and safeguarded cellular routing
+
+Now I have complete visibility into both trees. Here's what needs to happen:
+
+    Base: NetHunter softmac_platform_android.c (it's the superset — Modes A/B/C/D, CTW-11, dual TUN)
+    Integrate from AoA: per-path EACCES advisory in TUN open, more thorough inline rationale comments
+    Fix: NetHunter calls ratchet_cipher_init() with 5 args; AoA header declares 4 — resolve cleanly
+    Fix: spectrum_guard.h includes <hackrf.h> unconditionally — guard it
+    New stubs: usb_sync.h/.c, sdr_backend.h/.c, softmac_daemon.c (NetHunter deps not in AoA tree)
+    Platform header: add softmac_get_monotonic_sec() and NetHunter mode exports
+    Boost safety: sentinel_bridge_listener.py BOOSTMITM handler must never auto-populate softmac_boost_block — log-only, confirmed and strengthened
+
+Ran 2 commands, created 2 files
+
+Now the supporting stubs, updated headers, and merged Makefile:
+Created 5 files
+
+Now update softmac_platform.h to declare the new exports, and guard spectrum_guard.h:
+Ran 3 commands
+
+Now let me copy all the NetHunter support files in and build the merged Makefile, then package everything:
+
+Continue
+Apr 15
+Orchestrated continuation of merge process with file integration
+
+4 args confirmed. Now package everything up:
+Ran 2 commands, read a file
+
+Here's exactly what was done and every decision made:
+Merge summary
+The one file that actually changed: src/softmac_platform_android.c
+
+The NetHunter module's platform file was the superset (Modes A/B/C/D, CTW-11, dual TUN, routing). The AoA platform file was the earlier simpler version. The merge takes the NetHunter version as base and brings in two things from AoA:
+
+From AoA: Per-path EACCES advisory in open_tun(). The NetHunter version silently discarded the error. The AoA version printed a specific fix for the operator (setenforce 0, ro.boot.selinux=permissive, Echoe ROM note) per path — that's genuinely useful diagnostics and was restored.
+
+Fixed: ratchet_cipher_init() — the NetHunter file called it with 5 args; AoA's ratchet_cipher.h declares 4. The 5th arg (mn, monotonic sec) was redundant because seed_time in usb_sync_params_t already captures the connection epoch. Reduced to 4 args. ratchet_cipher.c is byte-for-byte untouched.
+New files (stubs required by NetHunter platform deps not in AoA tree)
+File	Purpose
+include/usb_sync.h	Declares usb_sync_params_t and the two sync functions
+include/sdr_backend.h	Declares sdr_backend_init() / sdr_backend_tx_symbols()
+src/usb_sync.c	Mode A: generates seeds from /dev/urandom; Modes B/C/D: stub with clear ADB setup instructions
+src/sdr_backend.c	HackRF backend guarded with #ifdef HAVE_HACKRF, stubs without
+src/softmac_daemon.c	Main loop entry point (polls TUN + ratchet + emergency flag)
+Files patched
+
+    sdrcal/spectrum_guard.h — #include <hackrf.h> and hackrf_device* declaration wrapped in #ifdef HAVE_HACKRF. Without this it fails to compile unless HackRF libs are installed, which blocks the entire non-SDR build path.
+    include/softmac_platform.h — softmac_get_monotonic_sec() and all NetHunter mode exports appended.
+    sentinel_bridge_listener.py — handle_boost_mitm() hardened with a explicit ╔══╗ safety banner. It was already log-only in both originals, but now it's impossible to accidentally mistake it for something that touches rmnet0.
+
+Boost / cellular safety — confirmed intact
+
+setup_routing() adds routes only on smac0/smac1. It never deletes, replaces, or mentions rmnet0. The rmnet0 metric 1024 line is descriptive logging only — the RIL sets that during data attach. If smac0 and smac1 both go away, rmnet0 becomes active automatically. Voice, SMS, VoLTE, and 911 run on the MDM9645 IMS bearer which is not IP-routed at all.
+Aoa softmac nethunter merged.tar
+GZ 
+
+ok forget all that for now, were hunting rogue cellphone towers. GSM ones, LTE ones. need to look at the pool of towers you said id be able to see if i setup this Nethunter, i could see a layer below where the rogue cell towers are hiding, en masse. make and deploy that module NOW on this nethunter build. just detect, and log with evidence chain and hashing
+Apr 15
+Architected rogue tower detection daemon leveraging Qualcomm DIAG protocol
+
+Extract alongside the previous deploy scripts, then:
+bash
+
+bash deploy_tower_hunter.sh
+adb shell su -c 'bash /sdcard/start_tower_hunt.sh'
+
+What this module does and why
+
+The layer below is the Qualcomm DIAG protocol on /dev/diag. Android's TelephonyManager gives you a heavily abstracted view — operator name, signal bars, connected/not. DIAG gives you the raw RRC (Radio Resource Control) and L1 messages the baseband actually sends and receives. Rogue towers can't sanitise what they transmit at that level.
+
+Data sources, in depth order:
+Source	What it exposes	Why it matters
+/dev/diag 0x5008	GSM cipher mode per cell	A5/0 = no encryption = ROGUE flag, 60 points
+/dev/diag 0x506C	Raw RR signalling messages	Cipher Mode Command captured verbatim
+/dev/diag 0xB17E	LTE ML1 serving cell	eNB ID, EARFCN, RSRP, emergency-only flag
+/dev/diag 0xB0C0	LTE RRC OTA messages	Raw SIBs, Security Mode Command
+/dev/diag 0xB180/81	NAS EMM in/out	Attach type, security negotiation
+AT+QENG="servingcell"	Serving + neighbour cell params	Cross-check, works without DIAG
+
+Rogue indicators scored 0–100:
+
+GSM: A5/0 no encryption (+60), A5/2 banned globally (+65), zero timing advance + strong signal (+25), empty BA list/no neighbours (+30), sudden LAC change (+25), ARFCN outside standard bands (+35).
+
+LTE: Emergency-only attach (+50), unknown eNB with strong RSRP (+35), sudden TAC change (+30), eNB ID < 100/factory default (+25), EARFCN/band mismatch (+40), PCI collision on different eNB (+45).
+
+Score ≥ 60 = ROGUE. Score ≥ 30 = SUSPECT.
+
+Evidence chain: Every event is SHA-256(all fields + prev_hash), chained from a GENESIS block. The chain log is a separate file of just seq|prev|this triplets. Run chain_verify.py towers_*.log --report to get a JSON + plain text report of all rogues found, with chain integrity verification. Any tampering with the log breaks the chain at the modified line.
+Rogue tower hunter.tar
+GZ 
+
+To run code, enable code execution and file creation in Settings > Capabilities.
+Claude needs code execution to access some attached files.
+Enable in settings
+
+
+Claude is AI and can make mistakes. Please double-check responses.
