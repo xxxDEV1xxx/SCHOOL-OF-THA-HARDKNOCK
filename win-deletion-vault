@@ -1,0 +1,1103 @@
+# DELETION VAULT — Full Architecture Design
+### Windows Kernel Minifilter · User-Mode Service · Vault System
+**Version 1.0 — April 2026**
+
+---
+
+## Table of Contents
+1. [Threat Model & Goals](#1-threat-model--goals)
+2. [Component Overview](#2-component-overview)
+3. [Kernel Driver Design (C / WDK)](#3-kernel-driver-design-c--wdk)
+4. [Kernel–Usermode Communication](#4-kerneluser-mode-communication)
+5. [User-Mode Service Design](#5-user-mode-service-design)
+6. [Vault Structure & Schema](#6-vault-structure--schema)
+7. [Encryption & Integrity](#7-encryption--integrity)
+8. [Build, Sign & Deploy Pipeline](#8-build-sign--deploy-pipeline)
+9. [Security Hardening](#9-security-hardening)
+10. [Operational Scenarios](#10-operational-scenarios)
+11. [Known Limitations & Edge Cases](#11-known-limitations--edge-cases)
+12. [Full Source File Map](#12-full-source-file-map)
+
+---
+
+## 1. Threat Model & Goals
+
+### What "Deletion Vault" Guarantees
+
+| Guarantee | Mechanism |
+|-----------|-----------|
+| Every file delete is intercepted | Minifilter altitude 360000 — above NTFS, below antivirus |
+| File content is preserved before destruction | Pre-operation copy in kernel context |
+| Works against ALL processes including SYSTEM / admin | Minifilter operates in ring-0, no userland bypass |
+| Vault cannot be deleted by the same process | Self-protection via FltDeleteFile refusal on vault path |
+| Evidence chain is intact (SHA-256, timestamps) | Hash computed pre-copy, sealed in metadata.json |
+
+### Attack Surfaces NOT Covered
+- Raw disk writes (bypassing NTFS entirely — e.g., `\\.\PhysicalDrive0`)
+- Kernel-mode rootkits with altitude above yours
+- Secure-erase tools that zero in-place before delete (content lost before IRP fires)
+- Memory-mapped files deleted via `NtSetInformationFile` while still mapped (handled — see §3.5)
+
+---
+
+## 2. Component Overview
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      User Application                        │
+│            (Explorer, cmd.exe, ransomware, etc.)             │
+└──────────────────────────┬──────────────────────────────────┘
+                           │  DeleteFile / NtSetInformationFile
+                           ▼
+┌─────────────────────────────────────────────────────────────┐
+│              I/O Manager  (Windows Kernel)                   │
+└──────────────────────────┬──────────────────────────────────┘
+                           │  IRP_MJ_SET_INFORMATION
+                           ▼
+┌─────────────────────────────────────────────────────────────┐
+│         DELETION VAULT MINIFILTER  (dvault.sys)              │
+│  Altitude: 360000                                            │
+│                                                              │
+│  PreSetInformation ──► IsDeleteOp? ──► CopyToVault()        │
+│                                    ──► HashFile()            │
+│                                    ──► SendToService()       │
+│                    ──► Block / Allow original IRP            │
+└──────────────────────────┬──────────────────────────────────┘
+                           │  FLT_PORT (named pipe)
+                           ▼
+┌─────────────────────────────────────────────────────────────┐
+│         USER-MODE SERVICE  (dvaultd.exe)                     │
+│                                                              │
+│  VaultIndexer  ──► SQLite DB (vault.db)                      │
+│  CryptoEngine  ──► AES-256-GCM per file                      │
+│  AuthGate      ──► PIN / smartcard unlock                    │
+│  WebUI         ──► localhost:7743 (management)               │
+└─────────────────────────────────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────┐
+│   C:\Vault\                                                  │
+│     2026-04-12\                                              │
+│       {volume-guid}\                                         │
+│         a1b2c3d4.bin          ← encrypted payload            │
+│         a1b2c3d4.meta.json    ← metadata + SHA-256           │
+│   vault.db                   ← SQLite index                  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 3. Kernel Driver Design (C / WDK)
+
+### 3.1 Driver Registration
+
+```c
+// dvault.c  —  Driver entry
+
+#include <fltKernel.h>
+#include <dontuse.h>
+#include "dvault.h"
+
+#define DVAULT_ALTITUDE  L"360000"
+#define VAULT_PORT_NAME  L"\\DVaultPort"
+
+PFLT_FILTER       g_FilterHandle   = NULL;
+PFLT_PORT         g_ServerPort     = NULL;
+PFLT_PORT         g_ClientPort     = NULL;  // one service connection
+
+/* ── Callback table ─────────────────────────────────────────── */
+const FLT_OPERATION_REGISTRATION g_Callbacks[] = {
+    {
+        IRP_MJ_SET_INFORMATION,
+        0,
+        DvPreSetInformation,   // pre-op: intercept delete intent
+        NULL                   // no post-op needed
+    },
+    {
+        IRP_MJ_CLEANUP,
+        0,
+        DvPreCleanup,          // catches DeleteOnClose flag
+        NULL
+    },
+    { IRP_MJ_OPERATION_END }
+};
+
+const FLT_REGISTRATION g_FilterRegistration = {
+    sizeof(FLT_REGISTRATION),
+    FLT_REGISTRATION_VERSION,
+    0,                         // flags
+    NULL,                      // context registrations
+    g_Callbacks,
+    DvUnload,
+    DvInstanceSetup,
+    DvInstanceQueryTeardown,
+    NULL, NULL, NULL, NULL, NULL
+};
+
+NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
+{
+    NTSTATUS status;
+    OBJECT_ATTRIBUTES oa;
+    UNICODE_STRING portName = RTL_CONSTANT_STRING(VAULT_PORT_NAME);
+    PSECURITY_DESCRIPTOR sd;
+
+    UNREFERENCED_PARAMETER(RegistryPath);
+
+    /* Register the minifilter */
+    status = FltRegisterFilter(DriverObject, &g_FilterRegistration, &g_FilterHandle);
+    if (!NT_SUCCESS(status)) return status;
+
+    /* Create comms port — only LocalSystem/Admins connect */
+    status = FltBuildDefaultSecurityDescriptor(&sd, FLT_PORT_ALL_ACCESS);
+    if (!NT_SUCCESS(status)) { FltUnregisterFilter(g_FilterHandle); return status; }
+
+    InitializeObjectAttributes(&oa, &portName,
+        OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE, NULL, sd);
+
+    status = FltCreateCommunicationPort(
+        g_FilterHandle, &g_ServerPort, &oa,
+        NULL,                        // server cookie
+        DvConnectNotify,
+        DvDisconnectNotify,
+        DvMessageNotify,
+        1                            // max connections (single service)
+    );
+    FltFreeSecurityDescriptor(sd);
+
+    if (!NT_SUCCESS(status)) { FltUnregisterFilter(g_FilterHandle); return status; }
+
+    /* Start filtering */
+    status = FltStartFiltering(g_FilterHandle);
+    if (!NT_SUCCESS(status)) {
+        FltCloseCommunicationPort(g_ServerPort);
+        FltUnregisterFilter(g_FilterHandle);
+    }
+    return status;
+}
+```
+
+---
+
+### 3.2 Pre-Operation Delete Interception
+
+```c
+// dvault_pre.c
+
+FLT_PREOP_CALLBACK_STATUS
+DvPreSetInformation(
+    _Inout_ PFLT_CALLBACK_DATA    Data,
+    _In_    PCFLT_RELATED_OBJECTS FltObjects,
+    _Out_   PVOID                *CompletionContext)
+{
+    PFILE_DISPOSITION_INFORMATION     dispInfo;
+    PFILE_DISPOSITION_INFORMATION_EX  dispInfoEx;
+    BOOLEAN deleteRequested = FALSE;
+
+    UNREFERENCED_PARAMETER(CompletionContext);
+
+    /* ── Detect delete intent ───────────────────────────────── */
+    switch (Data->Iopb->Parameters.SetFileInformation.FileInformationClass)
+    {
+    case FileDispositionInformation:
+        dispInfo = (PFILE_DISPOSITION_INFORMATION)
+            Data->Iopb->Parameters.SetFileInformation.InfoBuffer;
+        deleteRequested = dispInfo->DeleteFile;
+        break;
+
+    case FileDispositionInformationEx:
+        dispInfoEx = (PFILE_DISPOSITION_INFORMATION_EX)
+            Data->Iopb->Parameters.SetFileInformation.InfoBuffer;
+        deleteRequested =
+            (dispInfoEx->Flags & FILE_DISPOSITION_DELETE) != 0;
+        break;
+
+    default:
+        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    }
+
+    if (!deleteRequested)
+        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+
+    /* ── Is this a vault-internal file? skip recursion ─────── */
+    if (DvIsVaultPath(FltObjects->FileObject))
+        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+
+    /* ── Copy file to vault before allowing delete ──────────── */
+    NTSTATUS copyStatus = DvCaptureFile(Data, FltObjects);
+
+    if (!NT_SUCCESS(copyStatus)) {
+        /* POLICY DECISION:
+         * Option A (forensic-strict): block the delete, log failure
+         * Option B (permissive): allow delete anyway, log capture fail  */
+        KdPrint(("DVault: capture FAILED 0x%08X — blocking delete\n", copyStatus));
+        Data->IoStatus.Status      = STATUS_ACCESS_DENIED;
+        Data->IoStatus.Information = 0;
+        return FLT_PREOP_COMPLETE;   // block
+    }
+
+    /* Capture succeeded — let original IRP proceed */
+    return FLT_PREOP_SUCCESS_NO_CALLBACK;
+}
+```
+
+---
+
+### 3.3 File Capture Engine
+
+```c
+// dvault_capture.c
+
+#define DVAULT_COPY_CHUNK  (256 * 1024)  // 256 KB chunks
+
+NTSTATUS DvCaptureFile(
+    _In_ PFLT_CALLBACK_DATA    Data,
+    _In_ PCFLT_RELATED_OBJECTS FltObjects)
+{
+    NTSTATUS         status;
+    PFLT_FILE_NAME_INFORMATION nameInfo = NULL;
+    WCHAR            vaultPath[MAX_PATH];
+    LARGE_INTEGER    fileSize;
+    DVAULT_METADATA  meta = {0};
+
+    /* ── Get full source path ────────────────────────────────── */
+    status = FltGetFileNameInformation(Data,
+        FLT_FILE_NAME_NORMALIZED | FLT_FILE_NAME_QUERY_DEFAULT,
+        &nameInfo);
+    if (!NT_SUCCESS(status)) return status;
+
+    FltParseFileNameInformation(nameInfo);
+
+    /* ── Query file size ─────────────────────────────────────── */
+    status = DvQueryFileSize(FltObjects->Instance,
+                             FltObjects->FileObject, &fileSize);
+    if (!NT_SUCCESS(status)) goto cleanup;
+
+    /* ── Build vault destination path ───────────────────────── */
+    status = DvBuildVaultPath(nameInfo, vaultPath, sizeof(vaultPath));
+    if (!NT_SUCCESS(status)) goto cleanup;
+
+    /* ── SHA-256 hash the source file ───────────────────────── */
+    status = DvHashFile(FltObjects->Instance,
+                        FltObjects->FileObject,
+                        meta.Sha256);
+    if (!NT_SUCCESS(status)) goto cleanup;
+
+    /* ── Copy file data to vault ─────────────────────────────── */
+    status = DvCopyFileData(FltObjects->Instance,
+                            FltObjects->FileObject,
+                            vaultPath, fileSize);
+    if (!NT_SUCCESS(status)) goto cleanup;
+
+    /* ── Populate metadata ───────────────────────────────────── */
+    KeQuerySystemTime(&meta.CaptureTime);
+    meta.OriginalSize = fileSize.QuadPart;
+    meta.ProcessId    = (ULONG)(ULONG_PTR)
+                        PsGetCurrentProcessId();
+    DvGetProcessName(meta.ProcessName, sizeof(meta.ProcessName));
+    RtlCopyMemory(&meta.OriginalPath,
+                  nameInfo->Name.Buffer,
+                  min(nameInfo->Name.Length,
+                      sizeof(meta.OriginalPath) - sizeof(WCHAR)));
+
+    /* ── Send metadata to user-mode service ──────────────────── */
+    status = DvSendToService(&meta);
+
+cleanup:
+    if (nameInfo) FltReleaseFileNameInformation(nameInfo);
+    return status;
+}
+```
+
+---
+
+### 3.4 Vault Path Generator (Kernel)
+
+```c
+// dvault_path.c
+
+NTSTATUS DvBuildVaultPath(
+    _In_  PFLT_FILE_NAME_INFORMATION NameInfo,
+    _Out_ PWCHAR                     VaultPath,
+    _In_  SIZE_T                     VaultPathBytes)
+{
+    // Format: \??\C:\Vault\YYYY-MM-DD\{VolumeGuid}\<UUID>.bin
+    // UUID derived from original path hash to avoid collisions
+
+    TIME_FIELDS   tf;
+    LARGE_INTEGER now;
+    UCHAR         pathHash[32];
+    WCHAR         guidStr[40];
+
+    KeQuerySystemTime(&now);
+    RtlTimeToTimeFields(&now, &tf);
+
+    /* Volume GUID from NameInfo->Volume */
+    DvFormatVolumeGuid(&NameInfo->Volume, guidStr, sizeof(guidStr));
+
+    /* Short hash of original path for filename uniqueness */
+    DvSha256Buffer(NameInfo->Name.Buffer,
+                   NameInfo->Name.Length, pathHash);
+
+    return RtlStringCchPrintfW(VaultPath,
+        VaultPathBytes / sizeof(WCHAR),
+        L"\\??\\C:\\Vault\\%04d-%02d-%02d\\%s\\%02X%02X%02X%02X%02X%02X%02X%02X.bin",
+        tf.Year, tf.Month, tf.Day,
+        guidStr,
+        pathHash[0], pathHash[1], pathHash[2], pathHash[3],
+        pathHash[4], pathHash[5], pathHash[6], pathHash[7]);
+}
+```
+
+---
+
+### 3.5 DeleteOnClose Flag Handling
+
+`IRP_MJ_CLEANUP` fires when the last handle to a file closes with the `DeleteOnClose` flag set. This is a separate delete pathway from `FileDispositionInformation` and must be caught separately.
+
+```c
+FLT_PREOP_CALLBACK_STATUS
+DvPreCleanup(
+    _Inout_ PFLT_CALLBACK_DATA    Data,
+    _In_    PCFLT_RELATED_OBJECTS FltObjects,
+    _Out_   PVOID                *CompletionContext)
+{
+    UNREFERENCED_PARAMETER(CompletionContext);
+
+    /* Check if DeleteOnClose flag is set on this file object */
+    if (FltObjects->FileObject->DeletePending) {
+        DvCaptureFile(Data, FltObjects);
+    }
+
+    return FLT_PREOP_SUCCESS_NO_CALLBACK;
+}
+```
+
+---
+
+### 3.6 Self-Protection: Vault Path Guard
+
+```c
+// dvault_protect.c
+
+UNICODE_STRING g_VaultRootNt;  // L"\\Device\\HarddiskVolumeX\\Vault"
+
+BOOLEAN DvIsVaultPath(_In_ PFILE_OBJECT FileObject)
+{
+    if (!FileObject || !FileObject->FileName.Buffer) return FALSE;
+
+    // Build full device path and compare prefix
+    // Prevents recursive capture of vault writes
+    return RtlPrefixUnicodeString(&g_VaultRootNt,
+                                  &FileObject->FileName,
+                                  TRUE);  // case insensitive
+}
+```
+
+---
+
+### 3.7 SHA-256 in Kernel Mode
+
+WDK does not export a public SHA-256 API directly; use `BCryptHashData` via the kernel-accessible `Ksecdd.sys` provider:
+
+```c
+#include <bcrypt.h>
+#pragma comment(lib, "Ksecdd.lib")   // kernel-mode CNG
+
+NTSTATUS DvHashFile(
+    _In_  PFLT_INSTANCE Instance,
+    _In_  PFILE_OBJECT  FileObject,
+    _Out_ PUCHAR        Sha256Out)   // 32 bytes
+{
+    NTSTATUS          status;
+    BCRYPT_ALG_HANDLE hAlg  = NULL;
+    BCRYPT_HASH_HANDLE hHash = NULL;
+    PUCHAR            hashObj = NULL;
+    ULONG             hashObjLen, resultLen;
+    LARGE_INTEGER     offset = {0};
+    PVOID             chunk  = NULL;
+
+    status = BCryptOpenAlgorithmProvider(&hAlg,
+        BCRYPT_SHA256_ALGORITHM, NULL, 0);
+    if (!NT_SUCCESS(status)) return status;
+
+    BCryptGetProperty(hAlg, BCRYPT_OBJECT_LENGTH,
+        (PUCHAR)&hashObjLen, sizeof(ULONG), &resultLen, 0);
+
+    hashObj = ExAllocatePool2(POOL_FLAG_NON_PAGED, hashObjLen, 'VHsh');
+    chunk   = ExAllocatePool2(POOL_FLAG_NON_PAGED, DVAULT_COPY_CHUNK, 'VChk');
+
+    if (!hashObj || !chunk) {
+        status = STATUS_INSUFFICIENT_RESOURCES; goto done;
+    }
+
+    BCryptCreateHash(hAlg, &hHash, hashObj, hashObjLen, NULL, 0, 0);
+
+    // Read and hash file in chunks
+    for (;;) {
+        IO_STATUS_BLOCK iosb;
+        status = FltReadFile(Instance, FileObject, &offset,
+            DVAULT_COPY_CHUNK, chunk, FLTFL_IO_OPERATION_NON_CACHED,
+            NULL, &iosb, NULL);
+
+        if (!NT_SUCCESS(status)) break;
+        if (iosb.Information == 0) break;
+
+        BCryptHashData(hHash, chunk, (ULONG)iosb.Information, 0);
+        offset.QuadPart += iosb.Information;
+    }
+
+    if (status == STATUS_END_OF_FILE) status = STATUS_SUCCESS;
+    if (NT_SUCCESS(status))
+        BCryptFinishHash(hHash, Sha256Out, 32, 0);
+
+done:
+    if (hHash) BCryptDestroyHash(hHash);
+    if (hAlg)  BCryptCloseAlgorithmProvider(hAlg, 0);
+    if (hashObj) ExFreePoolWithTag(hashObj, 'VHsh');
+    if (chunk)   ExFreePoolWithTag(chunk,   'VChk');
+    return status;
+}
+```
+
+---
+
+## 4. Kernel / User-Mode Communication
+
+### 4.1 Message Protocol
+
+Both directions use a fixed-size header + variable payload:
+
+```c
+// dvault_ipc.h  — shared between kernel and user-mode
+
+#define DVAULT_MSG_MAGIC      0x44564C54UL  // 'DVLT'
+#define DVAULT_MSG_CAPTURE    0x01
+#define DVAULT_MSG_QUERYAUTH  0x02
+#define DVAULT_MSG_AUTHREPLY  0x82
+#define MAX_PATH_WCHARS       512
+
+#pragma pack(push, 1)
+
+typedef struct _DVAULT_MSG_HEADER {
+    ULONG   Magic;          // DVAULT_MSG_MAGIC
+    ULONG   Type;           // DVAULT_MSG_*
+    ULONG   PayloadLength;
+} DVAULT_MSG_HEADER;
+
+typedef struct _DVAULT_CAPTURE_MSG {
+    DVAULT_MSG_HEADER Header;
+    UCHAR             Sha256[32];
+    LONGLONG          OriginalSize;
+    ULONG             ProcessId;
+    WCHAR             ProcessName[16];
+    WCHAR             OriginalPath[MAX_PATH_WCHARS];
+    WCHAR             VaultPath[MAX_PATH_WCHARS];
+    LARGE_INTEGER     CaptureTime;   // FILETIME in kernel LARGE_INTEGER form
+} DVAULT_CAPTURE_MSG;
+
+typedef struct _DVAULT_AUTH_REPLY {
+    DVAULT_MSG_HEADER Header;
+    BOOLEAN           Allowed;
+    WCHAR             Reason[128];
+} DVAULT_AUTH_REPLY;
+
+#pragma pack(pop)
+```
+
+### 4.2 Kernel Send Side
+
+```c
+NTSTATUS DvSendToService(_In_ PDVAULT_METADATA Meta)
+{
+    DVAULT_CAPTURE_MSG  msg  = {0};
+    DVAULT_AUTH_REPLY   reply = {0};
+    ULONG               replyLen = sizeof(reply);
+    NTSTATUS            status;
+
+    if (!g_ClientPort) return STATUS_PORT_DISCONNECTED;
+
+    msg.Header.Magic         = DVAULT_MSG_MAGIC;
+    msg.Header.Type          = DVAULT_MSG_CAPTURE;
+    msg.Header.PayloadLength = sizeof(msg) - sizeof(DVAULT_MSG_HEADER);
+    msg.OriginalSize         = Meta->OriginalSize;
+    msg.ProcessId            = Meta->ProcessId;
+    msg.CaptureTime          = Meta->CaptureTime;
+
+    RtlCopyMemory(msg.Sha256,       Meta->Sha256,       32);
+    RtlCopyMemory(msg.ProcessName,  Meta->ProcessName,  sizeof(msg.ProcessName));
+    RtlCopyMemory(msg.OriginalPath, Meta->OriginalPath, sizeof(msg.OriginalPath));
+    RtlCopyMemory(msg.VaultPath,    Meta->VaultPath,    sizeof(msg.VaultPath));
+
+    status = FltSendMessage(g_FilterHandle, &g_ClientPort,
+        &msg, sizeof(msg), &reply, &replyLen, NULL);
+
+    return NT_SUCCESS(status) ? (reply.Allowed ? STATUS_SUCCESS
+                                               : STATUS_ACCESS_DENIED)
+                              : status;
+}
+```
+
+---
+
+## 5. User-Mode Service Design
+
+### 5.1 Service Skeleton (C++)
+
+```cpp
+// dvaultd.cpp — main service
+
+#include <windows.h>
+#include <fltuser.h>
+#include <thread>
+#include "vault_indexer.h"
+#include "crypto_engine.h"
+#include "web_ui.h"
+
+#pragma comment(lib, "fltlib.lib")
+
+class DeletionVaultService {
+    HANDLE        m_Port = INVALID_HANDLE_VALUE;
+    VaultIndexer  m_Indexer;
+    CryptoEngine  m_Crypto;
+    WebUI         m_WebUI;
+    std::thread   m_ListenThread;
+    volatile bool m_Running = false;
+
+public:
+    bool Start() {
+        // Connect to kernel port
+        HRESULT hr = FilterConnectCommunicationPort(
+            L"\\DVaultPort", 0, nullptr, 0, nullptr, &m_Port);
+        if (FAILED(hr)) return false;
+
+        m_Indexer.Open(L"C:\\Vault\\vault.db");
+        m_Crypto.LoadKey();              // from TPM or protected keystore
+        m_WebUI.Start(7743);             // management UI
+
+        m_Running = true;
+        m_ListenThread = std::thread(&DeletionVaultService::ListenLoop, this);
+        return true;
+    }
+
+    void ListenLoop() {
+        alignas(8) BYTE buf[sizeof(FILTER_MESSAGE_HEADER)
+                            + sizeof(DVAULT_CAPTURE_MSG)];
+        FILTER_MESSAGE_HEADER* header = (FILTER_MESSAGE_HEADER*)buf;
+        DVAULT_CAPTURE_MSG*    msg    =
+            (DVAULT_CAPTURE_MSG*)(buf + sizeof(FILTER_MESSAGE_HEADER));
+
+        while (m_Running) {
+            HRESULT hr = FilterGetMessage(m_Port, header,
+                sizeof(buf), nullptr);
+            if (FAILED(hr)) continue;
+
+            if (msg->Header.Magic != DVAULT_MSG_MAGIC) continue;
+
+            switch (msg->Header.Type) {
+            case DVAULT_MSG_CAPTURE:
+                HandleCapture(header, msg);
+                break;
+            }
+        }
+    }
+
+    void HandleCapture(FILTER_MESSAGE_HEADER* hdr,
+                       DVAULT_CAPTURE_MSG*    msg)
+    {
+        /* 1. Encrypt the vault file in-place */
+        m_Crypto.EncryptFile(msg->VaultPath);
+
+        /* 2. Write metadata JSON */
+        WriteMetadataJson(msg);
+
+        /* 3. Index in SQLite */
+        m_Indexer.Insert({
+            .sha256       = HexEncode(msg->Sha256, 32),
+            .originalPath = msg->OriginalPath,
+            .vaultPath    = msg->VaultPath,
+            .processId    = msg->ProcessId,
+            .processName  = msg->ProcessName,
+            .captureTime  = FiletimeToIso8601(msg->CaptureTime),
+            .fileSize     = msg->OriginalSize
+        });
+
+        /* 4. Reply to kernel (always allow for now) */
+        DVAULT_AUTH_REPLY reply{};
+        reply.Header.Magic   = DVAULT_MSG_MAGIC;
+        reply.Header.Type    = DVAULT_MSG_AUTHREPLY;
+        reply.Allowed        = TRUE;
+
+        FilterReplyMessage(m_Port,
+            (FILTER_REPLY_HEADER*)&reply, sizeof(reply));
+    }
+};
+```
+
+---
+
+### 5.2 Vault Indexer (SQLite Schema)
+
+```sql
+-- vault.db schema
+
+CREATE TABLE captures (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    sha256        TEXT NOT NULL,          -- hex-encoded, 64 chars
+    original_path TEXT NOT NULL,
+    vault_path    TEXT NOT NULL,
+    process_id    INTEGER,
+    process_name  TEXT,
+    capture_time  TEXT NOT NULL,          -- ISO-8601 UTC
+    file_size     INTEGER,
+    encrypted     INTEGER DEFAULT 1,      -- 0=plaintext, 1=AES-256-GCM
+    restored      INTEGER DEFAULT 0,
+    notes         TEXT
+);
+
+CREATE INDEX idx_sha256   ON captures(sha256);
+CREATE INDEX idx_path     ON captures(original_path);
+CREATE INDEX idx_capture  ON captures(capture_time);
+CREATE INDEX idx_pid      ON captures(process_id);
+```
+
+---
+
+## 6. Vault Structure & Schema
+
+### 6.1 Directory Layout
+
+```
+C:\Vault\
+├── vault.db                            ← SQLite master index (encrypted WAL)
+├── vault.key                           ← AES-256 master key (DPAPI + TPM sealed)
+│
+├── 2026-04-12\
+│   ├── {4D36E967-E325-11CE-BFC1-08002BE10318}\   ← Volume GUID (C:)
+│   │   ├── a1b2c3d4e5f60001.bin        ← encrypted file payload
+│   │   ├── a1b2c3d4e5f60001.meta.json  ← metadata record
+│   │   ├── 7f8e9a0b1c2d0002.bin
+│   │   └── 7f8e9a0b1c2d0002.meta.json
+│   └── {...}\                          ← D:, E:, etc.
+│
+└── 2026-04-11\
+    └── ...
+```
+
+### 6.2 Metadata JSON Schema
+
+```json
+{
+  "dvault_version": "1.0",
+  "capture_id": "a1b2c3d4e5f60001",
+  "sha256_original": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "original_path": "C:\\Users\\Christopher\\Documents\\evidence.docx",
+  "volume_guid": "{4D36E967-E325-11CE-BFC1-08002BE10318}",
+  "capture_time_utc": "2026-04-12T14:23:01.882Z",
+  "file_size_bytes": 284672,
+  "process_id": 9132,
+  "process_name": "explorer.exe",
+  "process_path": "C:\\Windows\\explorer.exe",
+  "process_parent_pid": 1024,
+  "user_sid": "S-1-5-21-...",
+  "user_name": "DESKTOP-ABC\\Christopher",
+  "encrypted": true,
+  "encryption_algo": "AES-256-GCM",
+  "nonce_hex": "a3f2...",
+  "vault_file": "a1b2c3d4e5f60001.bin",
+  "restore_count": 0,
+  "notes": ""
+}
+```
+
+---
+
+## 7. Encryption & Integrity
+
+### 7.1 Per-File Encryption
+
+```cpp
+// crypto_engine.cpp
+
+#include <bcrypt.h>
+#pragma comment(lib, "bcrypt.lib")
+
+void CryptoEngine::EncryptFile(const std::wstring& vaultPath)
+{
+    // Key: 256-bit master key (DPAPI-protected at rest)
+    // Nonce: 96-bit cryptographically random per file
+    // Tag: 128-bit GCM authentication tag (appended to ciphertext)
+
+    BYTE nonce[12], tag[16], key[32];
+    LoadMasterKey(key);          // Unwrap from DPAPI/TPM store
+    BCryptGenRandom(nullptr, nonce, 12, BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+
+    // Open vault file, read plaintext, encrypt in 256KB chunks
+    // Write format: [12-byte nonce][ciphertext][16-byte GCM tag]
+    // Original plaintext file is zeroed and replaced with ciphertext
+
+    EncryptFileAesGcm(vaultPath, key, nonce, tag);
+
+    // Store nonce in metadata JSON (tag as well for verification)
+    SecureZeroMemory(key, 32);
+}
+```
+
+### 7.2 Master Key Storage Strategy
+
+| Option | Mechanism | Threat Resistance |
+|--------|-----------|-------------------|
+| **TPM 2.0 sealed** | Key sealed to PCR state (boot chain) | High — key unusable if BIOS modified |
+| **DPAPI LocalMachine** | `CryptProtectData(CRYPTPROTECT_LOCAL_MACHINE)` | Medium — admin can decrypt |
+| **Smart card** | PKCS#11 / PIV | Highest — requires physical token |
+| **Passphrase** | Argon2id KDF → AES-256 | Low-Medium — PIN required at startup |
+
+**Recommended:** TPM 2.0 sealed + PIN stretch via Argon2id as backup unlock.
+
+---
+
+## 8. Build, Sign & Deploy Pipeline
+
+### 8.1 Prerequisites
+
+```
+- Windows 11 SDK (10.0.26100 or later)
+- WDK for Windows 11 (matching SDK version)
+- Visual Studio 2022 with "Desktop development with C++" + WDK extension
+- EV Code Signing Certificate (for production) OR
+- Test Signing Mode (for development/lab)
+```
+
+### 8.2 Driver Project Structure
+
+```
+DeletionVault.sln
+├── dvault/                    ← KMDF Minifilter project
+│   ├── dvault.c               ← DriverEntry, registration
+│   ├── dvault_pre.c           ← Pre-op callbacks
+│   ├── dvault_capture.c       ← File copy logic
+│   ├── dvault_path.c          ← Vault path builder
+│   ├── dvault_protect.c       ← Self-protection
+│   ├── dvault_hash.c          ← SHA-256 (BCrypt kernel)
+│   ├── dvault_ipc.c           ← FltPort send/receive
+│   ├── dvault.h               ← Shared header
+│   ├── dvault_ipc.h           ← Shared with user-mode
+│   ├── dvault.inf             ← Driver INF (altitude 360000)
+│   └── dvault.rc
+│
+├── dvaultd/                   ← User-mode service (Win32)
+│   ├── dvaultd.cpp            ← Service main, listen loop
+│   ├── vault_indexer.cpp/.h   ← SQLite wrapper
+│   ├── crypto_engine.cpp/.h   ← AES-256-GCM, key management
+│   ├── web_ui.cpp/.h          ← Embedded HTTP server
+│   ├── metadata.cpp/.h        ← JSON writer
+│   └── restore.cpp/.h         ← File restoration tool
+│
+└── shared/
+    └── dvault_ipc.h           ← Protocol struct (included by both)
+```
+
+### 8.3 INF File (Critical for Altitude)
+
+```ini
+; dvault.inf
+
+[Version]
+Signature   = "$Windows NT$"
+Class       = "ActivityMonitor"
+ClassGuid   = {b86dff51-a31e-4bac-b3cf-e8cfe75c9fc2}
+Provider    = %ManufacturerName%
+DriverVer   = 04/12/2026,1.0.0.0
+CatalogFile = dvault.cat
+
+[DestinationDirs]
+DefaultDestDir = 12  ; %windir%\system32\drivers
+
+[DefaultInstall.NT$ARCH$.10.0...22621]
+CopyFiles = Minifilter.DriverFiles
+
+[Minifilter.DriverFiles]
+dvault.sys
+
+[DefaultInstall.NT$ARCH$.10.0...22621.Services]
+AddService = DeletionVault,, Minifilter.Service
+
+[Minifilter.Service]
+DisplayName    = %ServiceName%
+Description    = %ServiceDescription%
+ServiceBinary  = %12%\dvault.sys
+ServiceType    = 2 ; SERVICE_FILE_SYSTEM_DRIVER
+StartType      = 0 ; SERVICE_BOOT_START   ← Earliest possible
+ErrorControl   = 1
+LoadOrderGroup = "FSFilter Activity Monitor"
+AddReg         = Minifilter.AddRegistry
+
+[Minifilter.AddRegistry]
+HKR,,"DebugFlags",0x00010001,0x0
+HKR,,"SupportedFeatures",0x00010001,0x3
+HKR,"Instances","DefaultInstance",0x00000000,%DefaultInstance%
+HKR,"Instances\"%DefaultInstance%","Altitude",0x00000000,%FilterAltitude%
+HKR,"Instances\"%DefaultInstance%","Flags",0x00010001,0x0
+
+[Strings]
+ManufacturerName   = "CTW Security Research"
+ServiceName        = "DeletionVault"
+ServiceDescription = "Deletion Vault Minifilter — File Preservation Driver"
+DefaultInstance    = "DeletionVault Instance"
+FilterAltitude     = "360000"
+```
+
+### 8.4 Development Signing (Test Mode)
+
+```powershell
+# 1. Enable test signing
+bcdedit /set testsigning on
+Restart-Computer
+
+# 2. Build in Visual Studio (Release|x64)
+# 3. Self-sign the catalog
+makecert -r -pe -ss "PrivateCertStore" -n "CN=DVaultTest" DVaultTest.cer
+inf2cat /driver:.\dvault\ /os:10_x64
+signtool sign /v /s "PrivateCertStore" /n "DVaultTest" /t http://timestamp.digicert.com .\dvault\dvault.cat
+
+# 4. Install
+pnputil /add-driver dvault.inf /install
+```
+
+### 8.5 Production Signing (EV Certificate)
+
+```powershell
+# EV cert required for Windows 10 1607+ kernel drivers
+# Cross-signed by Microsoft Hardware Dev Center (WHCP portal)
+# Submit to: https://partner.microsoft.com/en-us/dashboard/hardware
+
+signtool sign /v /fd sha256 /tr http://timestamp.digicert.com /td sha256 ^
+    /n "Your EV Cert CN" dvault.sys
+
+# Attestation signing (preferred for private drivers):
+# Upload .sys to Windows Hardware Dev Center → Attestation Signing
+# Returns Microsoft-signed binary
+```
+
+---
+
+## 9. Security Hardening
+
+### 9.1 Driver Self-Protection
+
+```c
+// Prevent userland from disabling the minifilter
+
+NTSTATUS DvInstanceQueryTeardown(
+    _In_ PCFLT_RELATED_OBJECTS FltObjects,
+    _In_ FLT_INSTANCE_QUERY_TEARDOWN_FLAGS Flags)
+{
+    UNREFERENCED_PARAMETER(FltObjects);
+    UNREFERENCED_PARAMETER(Flags);
+
+    // Return failure to reject voluntary detach
+    // (Detach still possible via FltDetachVolume from kernel)
+    return STATUS_FLT_DO_NOT_DETACH;
+}
+```
+
+### 9.2 Vault Directory ACL
+
+```powershell
+# Restrict vault to SYSTEM only at filesystem level
+# Combined with minifilter self-protection for defense-in-depth
+
+$path = "C:\Vault"
+$acl = New-Object System.Security.AccessControl.DirectorySecurity
+$acl.SetAccessRuleProtection($true, $false)  # disable inheritance
+
+$rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+    "NT AUTHORITY\SYSTEM", "FullControl", 
+    "ContainerInherit,ObjectInherit", "None", "Allow")
+$acl.AddAccessRule($rule)
+
+Set-Acl -Path $path -AclObject $acl
+```
+
+### 9.3 Communication Port Security
+
+```c
+// Only allow SYSTEM and Administrators to connect to the filter port
+
+PSECURITY_DESCRIPTOR DvBuildPortSd()
+{
+    // Grant FILE_ALL_ACCESS only to Local System (S-1-5-18)
+    // and Builtin Administrators (S-1-5-32-544)
+    // SDDL: D:(A;;FA;;;SY)(A;;FA;;;BA)
+    PSECURITY_DESCRIPTOR sd;
+    ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        L"D:(A;;FA;;;SY)(A;;FA;;;BA)",
+        SDDL_REVISION_1, &sd, NULL);
+    return sd;
+}
+```
+
+---
+
+## 10. Operational Scenarios
+
+### Scenario A: Explorer Shift+Delete
+
+```
+1. User presses Shift+Delete on document.docx
+2. Explorer calls NtSetInformationFile(FileDispositionInformation, Delete=TRUE)
+3. DvPreSetInformation fires at altitude 360000
+4. DvIsVaultPath() → FALSE (not a vault file)
+5. DvCaptureFile() → hash, copy to vault, notify service
+6. Service: encrypt + index in SQLite
+7. Return FLT_PREOP_SUCCESS_NO_CALLBACK → IRP continues → NTFS deletes
+```
+
+### Scenario B: Ransomware Mass Delete
+
+```
+1. Ransomware calls DeleteFileW() on 10,000 files in a loop
+2. Every delete is intercepted by minifilter
+3. All files captured to vault before deletion
+4. Service detects process deleting >100 files/second
+5. Service sends DENY reply → minifilter blocks further deletes from that PID
+6. Alert raised, process terminated via TerminateProcess (service-side)
+```
+
+### Scenario C: Admin cmd.exe "del /s /q C:\*"
+
+```
+1. Even SYSTEM-level deletes go through NTFS IRP path
+2. Minifilter intercepts all — altitude 360000 is above NTFS (altitude 0)
+3. Files captured until vault disk space exhausted
+4. If vault full: policy kicks in (block delete OR oldest purge OR alert + allow)
+```
+
+### Scenario D: Restore from Vault
+
+```
+dvaultd.exe --restore --sha256 e3b0c44... --destination "D:\Recovered\"
+
+1. Look up sha256 in vault.db → get vault_path + nonce
+2. Decrypt AES-256-GCM with master key
+3. Verify GCM tag integrity
+4. Write to destination path
+5. Mark restored=1 in SQLite
+```
+
+---
+
+## 11. Known Limitations & Edge Cases
+
+| Scenario | Status | Mitigation |
+|----------|--------|-----------|
+| Raw NTFS access via `\\.\HarddiskVolumeX` | Not intercepted | Block raw device handles in minifilter (IRP_MJ_CREATE filter) |
+| Memory-mapped file zeroed before delete | Content destroyed before capture | Intercept `NtCreateSection` on writable mappings |
+| Network filesystem (SMB) files | Minifilter intercepts local SMB client, not remote NTFS | Deploy on file server as well |
+| Very large files (>100 GB) | Capture delay blocks calling process | Async copy via work item; immediately reply FLT_PREOP_SUCCESS while copy proceeds in background |
+| Vault disk full | New captures fail → delete blocked | Pre-flight free space check; configurable purge policy |
+| Driver unload by admin | `FltUnregisterFilter` forcibly unloads | Code-signing + WHCP submission makes removal auditable |
+| Altitude conflicts | Another minifilter at 360000 | Choose from FSFilter Activity Monitor range: 320000–329999 or 360000–389999 |
+
+---
+
+## 12. Full Source File Map
+
+```
+DeletionVault/
+├── kernel/
+│   ├── dvault.c              DriverEntry, FltRegisterFilter, unload
+│   ├── dvault_pre.c          PreSetInformation, PreCleanup callbacks
+│   ├── dvault_capture.c      DvCaptureFile — hash, copy, notify
+│   ├── dvault_path.c         DvBuildVaultPath — date/guid/hash naming
+│   ├── dvault_protect.c      DvIsVaultPath — self-protection guard
+│   ├── dvault_hash.c         DvHashFile — BCrypt SHA-256 in kernel
+│   ├── dvault_ipc.c          DvSendToService, port connect/disconnect
+│   ├── dvault.h              Kernel-only internal structs
+│   ├── dvault_ipc.h          Shared protocol structs (kernel+user)
+│   ├── dvault.inf            Driver INF, altitude 360000
+│   └── sources               WDK build file
+│
+├── service/
+│   ├── dvaultd.cpp           SCM service entry, listen loop
+│   ├── vault_indexer.cpp     SQLite open/insert/query/restore
+│   ├── vault_indexer.h
+│   ├── crypto_engine.cpp     AES-256-GCM encrypt/decrypt, key wrap
+│   ├── crypto_engine.h
+│   ├── metadata.cpp          JSON writer for .meta.json files
+│   ├── metadata.h
+│   ├── web_ui.cpp            Embedded HTTP (port 7743) management UI
+│   ├── web_ui.h
+│   ├── restore.cpp           CLI restore tool
+│   └── restore.h
+│
+├── shared/
+│   └── dvault_ipc.h          Single source of truth for IPC structs
+│
+├── tools/
+│   ├── install.ps1           Test-mode signing + pnputil install
+│   ├── uninstall.ps1         Safe removal sequence
+│   ├── vault_query.py        Python CLI to query vault.db
+│   └── audit_report.py       Generate forensic inventory (SHA-256 manifest)
+│
+└── docs/
+    ├── ARCHITECTURE.md        (this document)
+    ├── THREAT_MODEL.md
+    └── BUILD.md
+```
+
+---
+
+## Appendix A — Minifilter Altitude Reference
+
+| Altitude Range | Load Order Group | Typical Use |
+|---------------|-----------------|-------------|
+| 420000–429999 | FSFilter Top | Highest — runs before everything |
+| 400000–409999 | FSFilter Copy | Backup agents |
+| **360000–389999** | **FSFilter Activity Monitor** | **← DVault lives here** |
+| 320000–329999 | FSFilter Undelete | Recycle bin enhancements |
+| 260000–269999 | FSFilter Anti-Virus | AV real-time scan |
+| 180000–189999 | FSFilter Encryption | Transparent encryption (EFS-like) |
+| 0 | NTFS | Bottom — file system itself |
+
+**DVault at 360000 sits ABOVE antivirus (260000), meaning it captures files before AV can quarantine/delete them** — critical for preserving evidence AV would otherwise destroy.
+
+---
+
+## Appendix B — Quick Reference Commands
+
+```powershell
+# Enable test signing (development only)
+bcdedit /set testsigning on
+
+# Install driver
+pnputil /add-driver dvault.inf /install
+
+# Check filter is loaded
+fltmc filters
+
+# Check filter instances (which volumes attached)
+fltmc instances
+
+# Detach from a volume (development — dvault blocks this in production)
+fltmc detach dvault C:
+
+# Start/stop service
+sc start dvaultd
+sc stop dvaultd
+
+# Query vault
+python tools\vault_query.py --last 50
+python tools\vault_query.py --pid 9132
+python tools\vault_query.py --path "C:\Users\*\Documents\*"
+
+# Restore file
+dvaultd.exe --restore --sha256 <hex> --dest D:\Recovered\
+
+# Full audit manifest
+python tools\audit_report.py --date 2026-04-12 --out manifest.csv
+```
+
+---
+
+*Document classification: Technical Design — CTW Security Research*
+*Revision history: v1.0 — April 12, 2026*
