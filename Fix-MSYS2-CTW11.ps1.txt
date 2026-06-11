@@ -1,0 +1,205 @@
+# CTW-11 GNSS Mapper - Final Fix - Made by Christopher Williams
+param([string]$M = "C:\msys64")
+
+$ErrorActionPreference = "Stop"
+$bash = "$M\usr\bin\bash.exe"
+$ash  = "$M\usr\bin\ash.exe"
+
+function S($m){ Write-Host "`n[CTW-11] $m" -ForegroundColor Cyan }
+function G($m){ Write-Host "  OK  $m" -ForegroundColor Green }
+function F($m){ Write-Host " FAIL $m" -ForegroundColor Red; exit 1 }
+
+$pr = New-Object Security.Principal.WindowsPrincipal(
+    [Security.Principal.WindowsIdentity]::GetCurrent())
+if(-not $pr.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){
+    F "Run as Administrator"
+}
+if(-not(Test-Path $bash)){ F "MSYS2 not found at $M" }
+
+$enc = New-Object Text.UTF8Encoding $false
+
+# 1. Defender
+S "Defender exclusion..."
+try{
+    Add-MpPreference -ExclusionPath $M
+    Set-MpPreference -DisableRealtimeMonitoring $true
+    $defOn=$true; G "Paused"
+}catch{ Write-Host "  !! Defender unchanged" -ForegroundColor Yellow; $defOn=$false }
+
+# 2. Kill ALL Cygwin processes
+S "Killing MSYS2 processes..."
+"bash","sh","ash","dash","pacman","gpg","gpg-agent","dirmngr","mintty" | ForEach-Object {
+    Get-Process $_ -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+}
+Start-Sleep 4; G "Done"
+
+# 3. Rebase from ash
+S "Rebasing DLLs from ash..."
+if(Test-Path $ash){
+    & $ash -c "rebaseall -v 2>&1" | Select-Object -Last 3
+    G "Rebase done"
+}
+Start-Sleep 3
+
+# 4. Disable PGP
+S "Disabling PGP..."
+$cf = "$M\etc\pacman.conf"
+$txt = [IO.File]::ReadAllText($cf)
+$txt = $txt -replace "SigLevel\s*=\s*\S+","SigLevel = Never"
+if($txt -notmatch "SigLevel"){ $txt = $txt -replace "\[options\]","[options]`nSigLevel = Never" }
+[IO.File]::WriteAllText($cf,$txt)
+G "SigLevel = Never"
+
+# 5. Wipe cache
+S "Clearing cache..."
+Remove-Item "$M\var\lib\pacman\sync\*"  -Force -EA SilentlyContinue
+Remove-Item "$M\var\cache\pacman\pkg\*" -Force -EA SilentlyContinue
+Remove-Item "$M\etc\pacman.d\gnupg"     -Recurse -Force -EA SilentlyContinue
+G "Cleared"
+
+$build = "$M\home\ctw11_build"
+New-Item -ItemType Directory -Path $build -Force | Out-Null
+
+# 6. Patch source: fix mkdir() for Windows (1-arg only, no mode)
+S "Patching source for Windows mkdir..."
+$src = "$build\ctw11_gnss_mapper_v2.c"
+if(-not(Test-Path $src)){ F "Source not at $src - copy ctw11_gnss_mapper_v2.c there first" }
+
+$code = [IO.File]::ReadAllText($src)
+
+# Replace 2-arg mkdir with windows-compat _mkdir or CreateDirectoryA
+# Also add direct.h include for _mkdir
+if($code -notmatch "_mkdir|direct\.h"){
+    # Add windows compat header after first #include
+    $code = $code -replace "(#include <sys/stat\.h>)",
+        "#ifdef _WIN32`n#include <direct.h>`n#define mkdir(p,m) _mkdir(p)`n#endif`n`$1"
+    [IO.File]::WriteAllText($src, $code, $enc)
+    G "mkdir patched"
+} else {
+    G "mkdir already patched"
+}
+
+# 7. Write bash scripts (no inline strings, no BOM, no &&)
+S "Writing bash scripts..."
+
+[IO.File]::WriteAllText("$M\home\sync.sh",
+    "export MSYSTEM=MSYS`n" +
+    "pacman -Syy --noconfirm`n", $enc)
+
+[IO.File]::WriteAllText("$M\home\install.sh",
+    "export MSYSTEM=MINGW64`n" +
+    "export PATH=/mingw64/bin:/usr/bin:`$PATH`n" +
+    "pacman -S --noconfirm --needed " +
+    "mingw-w64-x86_64-toolchain " +
+    "mingw-w64-x86_64-gtk3 " +
+    "mingw-w64-x86_64-cairo " +
+    "mingw-w64-x86_64-glib2 " +
+    "mingw-w64-x86_64-pango " +
+    "mingw-w64-x86_64-gdk-pixbuf2 " +
+    "mingw-w64-x86_64-pkg-config`n", $enc)
+
+[IO.File]::WriteAllText("$M\home\compile.sh",
+    "export MSYSTEM=MINGW64`n" +
+    "export PATH=/mingw64/bin:/usr/bin:`$PATH`n" +
+    "cd /home/ctw11_build`n" +
+    "CFLAGS=`$(pkg-config --cflags gtk+-3.0)`n" +
+    "LIBS=`$(pkg-config --libs gtk+-3.0)`n" +
+    "gcc -O2 -Wall -std=gnu11 `$CFLAGS -o ctw11_gnss_mapper.exe ctw11_gnss_mapper_v2.c `$LIBS -lm`n" +
+    "echo COMPILE_DONE`n", $enc)
+
+[IO.File]::WriteAllText("$M\home\getdlls.sh",
+    "export MSYSTEM=MINGW64`n" +
+    "export PATH=/mingw64/bin:/usr/bin:`$PATH`n" +
+    "ldd /home/ctw11_build/ctw11_gnss_mapper.exe`n", $enc)
+
+[IO.File]::WriteAllText("$M\home\schemas.sh",
+    "export PATH=/mingw64/bin:/usr/bin:`$PATH`n" +
+    "glib-compile-schemas /mingw64/share/glib-2.0/schemas/`n", $enc)
+
+G "Scripts written"
+
+# 8. Sync
+S "Syncing pacman DB..."
+& $bash --login "/home/sync.sh"
+if($LASTEXITCODE -ne 0){ F "Sync failed" }
+G "Synced"
+
+# 9. Install
+S "Installing MinGW64 GCC + GTK3..."
+& $bash --login "/home/install.sh"
+if($LASTEXITCODE -ne 0){ F "Install failed" }
+G "Installed"
+
+# 10. Kill again + rebase again before compile
+#     Fork errors recur if any process sneaked back in during pacman
+S "Second rebase before compile..."
+"bash","sh","ash","dash","pacman","gpg","gpg-agent","dirmngr" | ForEach-Object {
+    Get-Process $_ -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+}
+Start-Sleep 3
+if(Test-Path $ash){ & $ash -c "rebaseall -v 2>&1" | Select-Object -Last 2 }
+Start-Sleep 2
+G "Rebase 2 done"
+
+# 11. Compile â€” launch as new detached process, wait for binary
+S "Compiling..."
+$proc = Start-Process -FilePath $bash -ArgumentList "--login","/home/compile.sh" `
+    -PassThru -NoNewWindow -Wait
+if(-not(Test-Path "$build\ctw11_gnss_mapper.exe")){
+    F "Compile failed - check output above"
+}
+G "Binary produced"
+
+# 12. Bundle
+S "Bundling..."
+$out = "$env:USERPROFILE\Desktop\CTW11_GNSS_Mapper_Win64"
+New-Item -ItemType Directory -Path $out -Force | Out-Null
+Copy-Item "$build\ctw11_gnss_mapper.exe" $out -Force
+
+$dlls = & $bash --login "/home/getdlls.sh"
+foreach($ln in ($dlls -split "`n")){
+    if($ln -match "=> (/mingw64/bin/[^\s]+\.dll)"){
+        $wp = $Matches[1] -replace "/mingw64","$M\mingw64"
+        if(Test-Path $wp){ Copy-Item $wp $out -Force }
+    }
+}
+
+$sd = "$out\share\glib-2.0\schemas"
+New-Item -ItemType Directory -Path $sd -Force | Out-Null
+Copy-Item "$M\mingw64\share\glib-2.0\schemas\*" $sd -Force -EA SilentlyContinue
+& $bash --login "/home/schemas.sh" | Out-Null
+
+$isrc = "$M\mingw64\share\icons\Adwaita"
+if(Test-Path $isrc){
+    New-Item -ItemType Directory -Path "$out\share\icons\Adwaita" -Force | Out-Null
+    Copy-Item "$isrc\*" "$out\share\icons\Adwaita" -Recurse -Force -EA SilentlyContinue
+}
+G "Bundled: $out"
+
+# 13. Launcher + shortcut
+$bat = "@echo off`r`ncd /d `"%~dp0`"`r`n" +
+       "set GTK_EXE_PREFIX=%~dp0`r`n" +
+       "set GSETTINGS_SCHEMA_DIR=%~dp0share\glib-2.0\schemas`r`n" +
+       "start `"`" `"%~dp0ctw11_gnss_mapper.exe`"`r`n"
+[IO.File]::WriteAllText("$out\Launch_CTW11_Mapper.bat",$bat,[Text.Encoding]::ASCII)
+
+$wsh = New-Object -ComObject WScript.Shell
+$lnk = $wsh.CreateShortcut("$env:USERPROFILE\Desktop\CTW-11 GNSS Mapper.lnk")
+$lnk.TargetPath="$out\Launch_CTW11_Mapper.bat"
+$lnk.WorkingDirectory=$out
+$lnk.Description="CTW-11 GNSS Mapper - Made by Christopher Williams"
+$lnk.WindowStyle=1; $lnk.Save()
+G "Shortcut on Desktop"
+
+# 14. Re-enable Defender
+if($defOn){
+    Set-MpPreference -DisableRealtimeMonitoring $false -EA SilentlyContinue
+    G "Defender re-enabled (MSYS2 still excluded)"
+}
+
+Write-Host "`n===================================================" -ForegroundColor Green
+Write-Host "  CTW-11 DONE - Made by Christopher Williams"      -ForegroundColor Green
+Write-Host "  $out"                                             -ForegroundColor Green
+Write-Host "===================================================" -ForegroundColor Green
+$a = Read-Host "Launch now? Y/N"
+if($a -match "^[Yy]"){ Start-Process "$out\Launch_CTW11_Mapper.bat" }
