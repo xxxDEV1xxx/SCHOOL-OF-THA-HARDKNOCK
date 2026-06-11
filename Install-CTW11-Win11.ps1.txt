@@ -1,0 +1,221 @@
+# ============================================================
+#  CTW-11 GNSS Mapper â€” Windows 11 Installer  v3 (PS 5.1)
+#  Made by Christopher Williams
+# ============================================================
+
+param(
+    [string]$SourceFile = "ctw11_gnss_mapper_v2.c",
+    [string]$MSYS2Root  = "C:\msys64"
+)
+
+$ErrorActionPreference = "Stop"
+
+function Write-Step { param($m) Write-Host "`n[CTW-11] $m" -ForegroundColor Cyan }
+function Write-OK   { param($m) Write-Host "  OK  $m"    -ForegroundColor Green }
+function Write-Fail { param($m) Write-Host "  FAIL $m"   -ForegroundColor Red; exit 1 }
+
+# â”€â”€ 0. Elevation check â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+Write-Step "Checking privileges..."
+$id = [Security.Principal.WindowsIdentity]::GetCurrent()
+$pr = New-Object Security.Principal.WindowsPrincipal($id)
+if (-not $pr.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Write-Fail "Re-run PowerShell as Administrator"
+}
+Write-OK "Running as Administrator"
+
+# â”€â”€ 1. Locate source file â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+Write-Step "Locating source: $SourceFile"
+if (Test-Path $SourceFile) {
+    $srcPath = (Resolve-Path $SourceFile).Path
+} elseif (Test-Path (Join-Path $PSScriptRoot $SourceFile)) {
+    $srcPath = (Resolve-Path (Join-Path $PSScriptRoot $SourceFile)).Path
+} else {
+    Write-Fail "Cannot find $SourceFile -- place it in the same folder as this script"
+}
+Write-OK "Source: $srcPath"
+$BuildDir = Split-Path $srcPath
+
+# â”€â”€ 2. Install MSYS2 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+Write-Step "Checking MSYS2 at $MSYS2Root ..."
+if (-not (Test-Path "$MSYS2Root\usr\bin\bash.exe")) {
+    Write-Host "  Installing MSYS2 via winget..." -ForegroundColor Yellow
+    $wingetCmd = Get-Command winget -ErrorAction SilentlyContinue
+    if ($wingetCmd) {
+        winget install --id MSYS2.MSYS2 --source winget --silent `
+              --accept-package-agreements --accept-source-agreements
+    } else {
+        $installer = "$env:TEMP\msys2-installer.exe"
+        $dlUrl = "https://github.com/msys2/msys2-installer/releases/download/2024-01-13/msys2-x86_64-20240113.exe"
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Invoke-WebRequest -Uri $dlUrl -OutFile $installer -UseBasicParsing
+        Start-Process -FilePath $installer `
+            -ArgumentList "install --root `"$MSYS2Root`" --confirm-command" -Wait
+        Remove-Item $installer -Force
+    }
+    if (-not (Test-Path "$MSYS2Root\usr\bin\bash.exe")) {
+        Write-Fail "MSYS2 install failed. Try https://www.msys2.org manually."
+    }
+    Write-OK "MSYS2 installed"
+} else {
+    Write-OK "MSYS2 found"
+}
+
+# â”€â”€ 3. MSYS2 first-run initialization â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#  Fresh MSYS2 installs require msys2_shell.cmd to run once
+#  to generate /etc/fstab, /etc/profile, and home directories.
+#  Calling bash --login directly before this exits with code 1.
+Write-Step "Running MSYS2 first-time initialization..."
+$shellCmd = "$MSYS2Root\msys2_shell.cmd"
+if (Test-Path $shellCmd) {
+    # Run in background, wait up to 30s for init to complete
+    $proc = Start-Process -FilePath $shellCmd `
+        -ArgumentList "-defterm -no-start -mingw64 -c `"exit 0`"" `
+        -PassThru -WindowStyle Hidden
+    $proc | Wait-Process -Timeout 30 -ErrorAction SilentlyContinue
+}
+
+# Additional init: run bash once ignoring exit code to let profile settle
+$bash = "$MSYS2Root\usr\bin\bash.exe"
+& $bash --login -c "echo init" 2>$null
+Start-Sleep -Seconds 2
+Write-OK "MSYS2 initialized"
+
+# â”€â”€ Helper: run command in MinGW64 shell â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+function Invoke-MSYS2 {
+    param([string]$Cmd, [string]$Desc)
+    if ($Desc) { Write-Host "  => $Desc" -ForegroundColor DarkCyan }
+    # Use mingw64 env explicitly via MSYSTEM variable
+    $env:MSYSTEM = "MINGW64"
+    $env:CHERE_INVOKING = "1"
+    & $bash --login -c $Cmd
+    if ($LASTEXITCODE -ne 0) { Write-Fail "Failed: $Cmd" }
+}
+
+# â”€â”€ 4. Update package database â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+Write-Step "Updating pacman database..."
+# Pass 1 â€” may close terminal on first update; that's normal
+$env:MSYSTEM = "MINGW64"
+& $bash --login -c "pacman -Syuu --noconfirm --noprogressbar 2>&1 | tail -3"
+Start-Sleep -Seconds 3
+# Pass 2 â€” full clean update
+Invoke-MSYS2 "pacman -Syuu --noconfirm --noprogressbar 2>&1 | tail -3" "pacman update"
+Write-OK "Packages updated"
+
+# â”€â”€ 5. Install GCC + GTK3 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+Write-Step "Installing MinGW-w64 GCC + GTK3 (may take 5-10 min)..."
+$pkgs = "mingw-w64-x86_64-toolchain mingw-w64-x86_64-gtk3 mingw-w64-x86_64-cairo mingw-w64-x86_64-glib2 mingw-w64-x86_64-pango mingw-w64-x86_64-gdk-pixbuf2 mingw-w64-x86_64-pkg-config"
+Invoke-MSYS2 "pacman -S --noconfirm --needed --noprogressbar $pkgs 2>&1 | tail -5" "install packages"
+Write-OK "Toolchain ready"
+
+# â”€â”€ 6. Prepare build folder â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+Write-Step "Preparing build..."
+$msysBuild = "$MSYS2Root\home\ctw11_build"
+New-Item -ItemType Directory -Path $msysBuild -Force | Out-Null
+Copy-Item $srcPath "$msysBuild\ctw11_gnss_mapper_v2.c" -Force
+
+$tab = [char]9
+$mfLines = @(
+    "CC      = gcc",
+    "TARGET  = ctw11_gnss_mapper.exe",
+    "SRC     = ctw11_gnss_mapper_v2.c",
+    "CFLAGS  = -O2 -Wall -std=gnu11 `$(shell pkg-config --cflags gtk+-3.0)",
+    "LDFLAGS = `$(shell pkg-config --libs gtk+-3.0) -lm",
+    "",
+    "all: `$(TARGET)",
+    "",
+    "`$(TARGET): `$(SRC)",
+    ($tab + '$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)'),
+    "",
+    "clean:",
+    ($tab + "rm -f `$(TARGET)")
+)
+[System.IO.File]::WriteAllLines(
+    "$msysBuild\Makefile", $mfLines, [System.Text.Encoding]::UTF8)
+Write-OK "Makefile written"
+
+# â”€â”€ 7. Compile â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+Write-Step "Compiling..."
+Invoke-MSYS2 "cd /home/ctw11_build && make 2>&1" "gcc build"
+if (-not (Test-Path "$msysBuild\ctw11_gnss_mapper.exe")) {
+    Write-Fail "No binary produced -- check errors above"
+}
+Write-OK "Compiled OK"
+
+# â”€â”€ 8. Bundle DLLs into portable output folder â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+Write-Step "Bundling GTK3 runtime DLLs..."
+$OutputDir = Join-Path $BuildDir "CTW11_GNSS_Mapper_Win64"
+New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
+Copy-Item "$msysBuild\ctw11_gnss_mapper.exe" $OutputDir -Force
+
+$lddRaw = & $bash --login -c "export MSYSTEM=MINGW64; ldd /home/ctw11_build/ctw11_gnss_mapper.exe 2>&1"
+foreach ($ln in ($lddRaw -split "`n")) {
+    if ($ln -match "=> (/mingw64/bin/[^\s]+\.dll)") {
+        $wp = $Matches[1] -replace "/mingw64","$MSYS2Root\mingw64"
+        if (Test-Path $wp) { Copy-Item $wp $OutputDir -Force }
+    }
+}
+
+# GLib schemas
+$sdst = "$OutputDir\share\glib-2.0\schemas"
+New-Item -ItemType Directory -Path $sdst -Force | Out-Null
+$ssrc = "$MSYS2Root\mingw64\share\glib-2.0\schemas"
+if (Test-Path $ssrc) {
+    Copy-Item "$ssrc\*" $sdst -Force -ErrorAction SilentlyContinue
+}
+Invoke-MSYS2 "glib-compile-schemas /mingw64/share/glib-2.0/schemas/ 2>&1" "glib schemas"
+
+# Icons
+$isrc = "$MSYS2Root\mingw64\share\icons\Adwaita"
+if (Test-Path $isrc) {
+    $idst = "$OutputDir\share\icons\Adwaita"
+    New-Item -ItemType Directory -Path $idst -Force | Out-Null
+    Copy-Item "$isrc\*" $idst -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# GDK pixbuf loaders
+$psrc = "$MSYS2Root\mingw64\lib\gdk-pixbuf-2.0"
+if (Test-Path $psrc) {
+    $pdst = "$OutputDir\lib\gdk-pixbuf-2.0"
+    New-Item -ItemType Directory -Path $pdst -Force | Out-Null
+    Copy-Item "$psrc\*" $pdst -Recurse -Force -ErrorAction SilentlyContinue
+}
+Write-OK "Bundle complete: $OutputDir"
+
+# â”€â”€ 9. Launcher .bat â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+Write-Step "Writing launcher..."
+$batLines = @(
+    "@echo off",
+    "cd /d `"%~dp0`"",
+    "set GTK_EXE_PREFIX=%~dp0",
+    "set GDK_PIXBUF_MODULE_FILE=%~dp0lib\gdk-pixbuf-2.0\2.10.0\loaders.cache",
+    "set GSETTINGS_SCHEMA_DIR=%~dp0share\glib-2.0\schemas",
+    "start `"`" `"%~dp0ctw11_gnss_mapper.exe`""
+)
+[System.IO.File]::WriteAllLines(
+    "$OutputDir\Launch_CTW11_Mapper.bat", $batLines, [System.Text.Encoding]::ASCII)
+Write-OK "Launcher written"
+
+# â”€â”€ 10. Desktop shortcut â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+Write-Step "Creating desktop shortcut..."
+$desktop = [Environment]::GetFolderPath("Desktop")
+$wsh  = New-Object -ComObject WScript.Shell
+$link = $wsh.CreateShortcut("$desktop\CTW-11 GNSS Mapper.lnk")
+$link.TargetPath       = "$OutputDir\Launch_CTW11_Mapper.bat"
+$link.WorkingDirectory = $OutputDir
+$link.Description      = "CTW-11 GNSS Coordinate Mapper - Made by Christopher Williams"
+$link.WindowStyle      = 1
+$link.Save()
+Write-OK "Shortcut on Desktop"
+
+# â”€â”€ Done â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+Write-Host ""
+Write-Host "============================================================" -ForegroundColor Green
+Write-Host "  CTW-11 GNSS MAPPER -- INSTALLATION COMPLETE"              -ForegroundColor Green
+Write-Host "  Made by Christopher Williams"                              -ForegroundColor Green
+Write-Host "============================================================" -ForegroundColor Green
+Write-Host "  EXE      : $OutputDir\ctw11_gnss_mapper.exe"
+Write-Host "  Launcher : $OutputDir\Launch_CTW11_Mapper.bat"
+Write-Host "  Desktop  : CTW-11 GNSS Mapper"
+Write-Host ""
+$ans = Read-Host "Run now? (Y/N)"
+if ($ans -match "^[Yy]") { Start-Process "$OutputDir\Launch_CTW11_Mapper.bat" }
