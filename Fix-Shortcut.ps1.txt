@@ -1,0 +1,20 @@
+# Fix CTW-11 shortcut - Made by Christopher Williams
+$out = "$env:USERPROFILE\Desktop\CTW11_GNSS_Mapper_Win64"
+if(-not(Test-Path $out)){
+    # Try to find it
+    $out = Get-ChildItem "$env:USERPROFILE\Desktop" -Directory -Filter "CTW11*" |
+           Select-Object -First 1 -ExpandProperty FullName
+}
+if(-not $out){ Write-Host "Cannot find CTW11 folder on Desktop" -ForegroundColor Red; exit 1 }
+
+$wsh = New-Object -ComObject WScript.Shell
+$lnk = $wsh.CreateShortcut("$env:USERPROFILE\Desktop\CTW-11 GNSS Mapper.lnk")
+$lnk.TargetPath       = "$env:SystemRoot\System32\cmd.exe"
+$lnk.Arguments        = "/c `"$out\Launch_CTW11_Mapper.bat`""
+$lnk.WorkingDirectory = $out
+$lnk.Description      = "CTW-11 GNSS Mapper - Made by Christopher Williams"
+$lnk.WindowStyle      = 1
+$lnk.Save()
+
+Write-Host "Shortcut fixed. Launching now..." -ForegroundColor Green
+Start-Process "$env:SystemRoot\System32\cmd.exe" -ArgumentList "/c `"$out\Launch_CTW11_Mapper.bat`""
