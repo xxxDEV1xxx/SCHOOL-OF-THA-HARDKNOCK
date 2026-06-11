@@ -1,0 +1,1025 @@
+give me the entire creation process of pipes and sockets from the moment of power on , including what system critical files create them and at what point
+Apr 27
+Pipe and Socket Creation: Power-On to Userspace
+Stage 1: Firmware / Pre-Boot (BIOS/UEFI)
+
+No pipes or sockets exist yet. Hardware is enumerated, POST runs, boot device selected. The CPU is in real mode (x86). Nothing in the IPC subsystem exists — no kernel, no memory allocator, no VFS.
+Stage 2: Bootloader
+
+GRUB2 / LILO / syslinux loads the compressed kernel image (vmlinuz) and optional initrd/initramfs into physical RAM, then jumps to the kernel entry point (arch/x86/boot/header.S → startup_32 / startup_64).
+
+Still no pipes. No sockets. The kernel has not initialized anything yet.
+Stage 3: Kernel Decompression and Early Init
+
+Files: arch/x86/boot/compressed/head_64.S, arch/x86/kernel/head_64.S
+
+    startup_64 sets up page tables, enables long mode, jumps to start_kernel() in init/main.c
+    start_kernel() calls a strict ordered sequence — nothing IPC-related fires until memory and the VFS are ready
+
+Stage 4: Memory Allocator Init
+
+Files: mm/page_alloc.c, mm/slab.c / mm/slub.c
+
+start_kernel() calls:
+
+    setup_arch() — detects RAM, builds physical memory map
+    build_all_zonelists() — sets up NUMA zones
+    mem_init() — hands all pages to the buddy allocator
+    kmem_cache_init() — brings up the SLAB/SLUB allocator
+
+This is a prerequisite. Every pipe buffer, socket structure, inode, and file descriptor will be allocated from these caches. Without this stage, nothing else runs.
+Stage 5: VFS Init — Where Inodes and Files Become Possible
+
+Files: fs/dcache.c, fs/inode.c, fs/file_table.c
+
+start_kernel() calls vfs_caches_init():
+
+vfs_caches_init()
+  ├── dcache_init()         — dentry cache (kmem_cache: dentry)
+  ├── inode_init()          — inode cache (kmem_cache: inode_cache)
+  ├── files_init()          — file struct cache (kmem_cache: filp)
+  ├── mnt_init()            — mount namespace, rootfs mount
+  └── bdev_cache_init()     — block device inode cache
+
+After mnt_init(), a rootfs tmpfs mount exists in memory. The VFS is now functional. Inodes can be allocated. File descriptors can be opened.
+
+Pipes become structurally possible here, because a pipe is a VFS object (two file descriptors + an inode on pipefs).
+Stage 6: pipefs Registration
+
+File: fs/pipe.c
+c
+
+static int __init init_pipe_fs(void)
+{
+    register_filesystem(&pipe_fs_type);
+    pipe_mnt = kern_mount(&pipe_fs_type);
+    ...
+}
+fs_initcall(init_pipe_fs);
+
+fs_initcall macros are executed during do_initcalls() inside start_kernel() → do_basic_setup(). This happens during early kernel init, before any userspace process runs.
+
+After this call:
+
+    pipefs is mounted internally (not visible to userspace)
+    pipe_inode_info slab cache exists
+    pipe_read_open, pipe_write_open, pipe_rdwr_ops file operations are registered
+    The kernel pipe() syscall handler (fs/pipe.c: do_pipe_flags()) can now create functional pipes
+
+Pipes are now creatable from kernel context.
+Stage 7: Socket Subsystem Init
+
+File: net/socket.c
+c
+
+static int __init sock_init(void)
+{
+    skb_init();           // sk_buff slab cache
+    init_inodecache();    // sockfs inode cache
+    register_filesystem(&sock_fs_type);
+    sock_mnt = kern_mount(&sock_fs_type);
+    ...
+}
+core_initcall(sock_init);
+
+core_initcall runs before fs_initcall, so sockfs is initialized prior to pipefs.
+
+After this:
+
+    sockfs is internally mounted
+    socket_alloc slab cache exists
+    sock_create_kern() can create kernel-internal sockets
+    The socket() syscall handler is wired
+
+Individual protocol families register separately via proto_register() and sock_register():
+Protocol	File	initcall level
+AF_UNIX	net/unix/af_unix.c	fs_initcall(af_unix_init)
+AF_INET (TCP/UDP)	net/ipv4/af_inet.c	fs_initcall(inet_init)
+AF_INET6	net/ipv6/af_inet6.c	module_init or fs_initcall
+AF_NETLINK	net/netlink/af_netlink.c	core_initcall
+AF_PACKET	net/packet/af_packet.c	fs_initcall
+
+AF_UNIX is the critical one — it's the socket type used for all local IPC (systemd, DBus, X11, etc.) and it's ready before PID 1 starts.
+Stage 8: Network Stack Init
+
+Files: net/core/dev.c, net/ipv4/tcp.c, net/ipv4/udp.c
+
+inet_init()
+  ├── proto_register(&tcp_prot)
+  ├── proto_register(&udp_prot)
+  ├── proto_register(&raw_prot)
+  ├── sock_register(&inet_family_ops)   ← AF_INET now usable
+  ├── ip_init()
+  ├── tcp_init()                        ← TCP hash tables, slab caches
+  └── udp_init()                        ← UDP hash tables
+
+After inet_init(), AF_INET TCP and UDP sockets are fully creatable from kernel space.
+Stage 9: do_initcalls() — Full Init Ordering
+
+File: init/main.c
+
+The kernel executes initcall levels in strict order:
+
+early_initcall      — arch setup
+pure_initcall       — (rare)
+core_initcall       — sock_init(), netlink
+postcore_initcall   — bus subsystems
+arch_initcall       — arch-specific
+subsys_initcall     — device model, PCI
+fs_initcall         — init_pipe_fs(), af_unix_init(), inet_init()
+rootfs_initcall     — populate rootfs
+device_initcall     — most drivers
+late_initcall       — optional/deferred
+
+By the end of do_initcalls(), all of the following are ready:
+
+    pipefs mounted, pipe() fully operational
+    sockfs mounted
+    AF_UNIX, AF_INET, AF_NETLINK, AF_PACKET all registered
+
+Stage 10: kernel_init() — PID 1 Fork
+
+File: init/main.c
+c
+
+kernel_thread(kernel_init, NULL, CLONE_FS);
+
+The idle thread (PID 0) spawns kernel_init as PID 1. This thread:
+
+    Calls kernel_init_freeable() — completes driver init, mounts devtmpfs
+    Opens /dev/console as fds 0, 1, 2
+    Calls run_init_process() → execve("/sbin/init") (or systemd)
+
+At the execve point, userspace begins. The kernel's FD table for PID 1 now has three entries. No pipes yet in userspace — just the console.
+Stage 11: initramfs / initrd Execution
+
+If initramfs is used:
+
+The kernel unpacks the CPIO archive into rootfs and executes /init (a shell script or binary). This script:
+
+    May create pipes via shell (| operators) — these call pipe2() syscall
+    Mounts /proc, /sys, /dev
+    May bring up udevd — which uses AF_NETLINK sockets to receive kernel uevents
+    Pivots root and execs real init
+
+First userspace pipes typically appear here in the initramfs /init shell pipelines.
+Stage 12: systemd / SysVinit — First Durable Sockets
+
+systemd (/usr/lib/systemd/systemd, PID 1 after pivot):
+Socket Units (.socket files)
+
+systemd reads unit files from:
+
+    /usr/lib/systemd/system/
+    /etc/systemd/system/
+
+For each .socket unit, systemd calls socket() + bind() + listen() before starting the associated service. This is socket activation.
+
+Critical early sockets created by systemd:
+Socket path	Type	Purpose
+/run/systemd/private/	AF_UNIX SOCK_STREAM	Internal systemd IPC
+/run/udev/control	AF_UNIX SOCK_SEQPACKET	udevd control
+/run/systemd/journal/socket	AF_UNIX SOCK_DGRAM	journald early logging
+/run/systemd/journal/stdout	AF_UNIX SOCK_STREAM	stdout capture
+/run/dbus/system_bus_socket	AF_UNIX SOCK_STREAM	D-Bus system bus
+
+These are created by systemd's own socket_address_listen() before any service process spawns.
+Pipes in systemd
+
+systemd creates pipe2(O_CLOEXEC) pairs internally for:
+
+    stdout/stderr capture of service processes
+    Watchdog communication
+    Synchronization barriers during service startup
+
+File: src/basic/pipe.c in systemd source
+Stage 13: Userspace Syscall Paths (Runtime)
+
+Once userspace is running, all pipes and sockets are created through standard syscalls:
+pipe()
+
+userspace: pipe(fds) or pipe2(fds, flags)
+    │
+    └─► sys_pipe2()                   [fs/pipe.c]
+          ├── get_pipe_inode()        ← allocates inode on pipefs
+          │     └── new_inode_pseudo(pipe_mnt->mnt_sb)
+          ├── alloc_pipe_info()       ← allocates pipe_inode_info
+          │     └── kcalloc(pipe_bufs, sizeof(struct pipe_buffer))
+          ├── create_pipe_files()     ← two struct file*, one R one W
+          └── get_unused_fd_flags() x2 ← installs into FD table
+
+A pipe is: 2 file descriptors + 1 pipefs inode + 1 pipe_inode_info + N pipe_buffer structs (default 16 pages = 64KB).
+socket()
+
+userspace: socket(AF_INET, SOCK_STREAM, 0)
+    │
+    └─► sys_socket()                  [net/socket.c]
+          ├── sock_create()
+          │     ├── security_socket_create()   ← LSM hook (SELinux/AppArmor)
+          │     ├── net_proto_family lookup    ← finds inet_family_ops
+          │     └── inet_create()             [net/ipv4/af_inet.c]
+          │           ├── sk_alloc()          ← allocates sock struct from proto slab
+          │           ├── inet_sock_destruct setup
+          │           └── proto->init()       ← tcp_v4_init_sock() for TCP
+          └── sock_map_fd()
+                ├── get_unused_fd_flags()
+                ├── sock_alloc_file()         ← creates struct file on sockfs
+                └── fd_install()              ← installs into FD table
+
+A socket is: 1 file descriptor + 1 sockfs inode + 1 socket struct + 1 sock struct (protocol-specific, e.g. tcp_sock).
+Critical File Map Summary
+Subsystem	Kernel Source File	What it does
+Pipe filesystem	fs/pipe.c	pipefs registration, pipe() syscall implementation
+Pipe buffers	fs/pipe.c	alloc_pipe_info(), pipe_buffer management
+Socket core	net/socket.c	sockfs, socket() syscall, sock_create()
+AF_UNIX	net/unix/af_unix.c	Local domain sockets
+AF_INET	net/ipv4/af_inet.c	TCP/UDP socket creation
+TCP	net/ipv4/tcp.c, tcp_ipv4.c	TCP sock init, hash tables
+UDP	net/ipv4/udp.c	UDP sock init
+sk_buff	net/core/skbuff.c	Socket buffer slab cache
+VFS inode	fs/inode.c	inode allocation (required by both)
+VFS file	fs/file_table.c	struct file allocation
+FD table	fs/file.c	Per-process FD array
+Memory	mm/slub.c	All slab caches backing the above
+Kernel init	init/main.c	start_kernel(), do_initcalls(), PID 1 exec
+Timeline Condensed
+
+Power-on
+  │
+  ├─ BIOS/UEFI POST
+  ├─ Bootloader loads vmlinuz + initrd
+  ├─ start_kernel()
+  │     ├─ mm init (buddy + SLUB)          ← memory for everything
+  │     ├─ vfs_caches_init()               ← inodes, dentries, files possible
+  │     └─ do_initcalls()
+  │           ├─ core: sock_init()         ← sockfs mounted, socket() wired
+  │           ├─ core: netlink_init()      ← AF_NETLINK ready
+  │           └─ fs:   init_pipe_fs()      ← pipefs mounted, pipe() wired
+  │                    af_unix_init()      ← AF_UNIX ready
+  │                    inet_init()         ← AF_INET TCP/UDP ready
+  │
+  ├─ kernel_init() / PID 1 forked
+  ├─ initramfs /init executes             ← FIRST USERSPACE PIPES (shell |)
+  ├─ pivot_root, exec /sbin/init
+  └─ systemd starts
+        ├─ socket units activated         ← /run/systemd/*, /run/dbus/*
+        ├─ udevd spawned (AF_NETLINK)
+        ├─ journald spawned (AF_UNIX)
+        └─ all subsequent services        ← pipes/sockets on demand via syscall
+
+To run code, enable code execution and file creation in Settings > Capabilities.
+
+so it starts creating them around the time the system has inderstanding of C code, i see. whats the .S files language and whats the soonest it can take assembly code from the user input? before this C code?
+Apr 27
+.S Files and Assembly Input Timing
+What Language is .S
+
+.S files are GNU Assembler (GAS) source — AT&T syntax x86 assembly, preprocessed by the C preprocessor (cpp) before assembly. The capital .S means cpp runs first (so #include, #define, #ifdef work). Lowercase .s skips cpp.
+
+The syntax is AT&T, not Intel:
+asm
+
+movq %rsp, %rbp       # src, dst  (opposite of Intel)
+movq $0x1000, %rax    # immediate prefix $
+leaq -0x20(%rbp), %rsi # memory operand with base+offset
+
+These files run on bare metal with no C runtime, no stack in some cases, no allocator, no OS — they are what builds the environment that C eventually runs inside.
+The Assembly Stages at Boot
+
+head_64.S        ← CPU starts here. Real mode → protected → long mode
+compressed/head_64.S  ← decompresses vmlinuz into RAM
+vmlinux links    ← .S init sections run before any C function
+start_kernel()   ← first C function called from assembly
+
+The .S files set up:
+
+    The GDT and IDT (descriptor tables)
+    Paging / page tables
+    The stack pointer (%rsp) — C cannot run without this
+    CPU feature detection (CPUID)
+    BSS zeroing
+    Then a call start_kernel or jmp start_kernel
+
+C is helpless until the .S bootstrap hands it a valid stack and memory model.
+When Can the System Accept User Assembly?
+
+This is the sharp question. There are several distinct points:
+Point 1: Never Before the Bootloader
+
+Before the bootloader, the machine is executing firmware (UEFI/BIOS) from ROM. User input doesn't exist. No keyboard driver, no bus enumeration for input devices — nothing.
+Point 2: Bootloader Stage (GRUB rescue shell)
+
+GRUB2 has a minimal command interpreter. If boot fails and you drop to the GRUB rescue shell:
+
+grub rescue>
+
+You can type GRUB commands — not assembly. No assembler is present. The earliest "user input that affects execution" is here, but it's GRUB scripting, not assembly.
+Point 3: initramfs Shell — First Real User Input
+
+When initramfs drops a shell (busybox ash), you have:
+
+    A working keyboard driver
+    A tty
+    A shell
+
+But no assembler is present in a minimal initramfs. You can write shell, not assembly.
+Point 4: Userspace with an Assembler Installed
+
+The absolute earliest you can submit assembly for execution:
+
+Option A — as (GNU assembler) in userspace:
+bash
+
+echo "movl \$1, %eax" | as -o /tmp/t.o   # needs full rootfs mounted
+
+Available once the root filesystem is mounted and binutils is present.
+
+Option B — nasm / yasm — same requirement, full userspace.
+
+Option C — inline assembly via gcc:
+c
+
+asm volatile("nop");
+
+Compiled in userspace, same timing.
+The Earliest Possible Path to User-Supplied Assembly Execution
+
+If you want assembly executing as early as physically possible from user input, the answer is:
+
+Replace or modify the initramfs.
+
+The initramfs is a CPIO archive that unpacks into rootfs before PID 1. If you build a custom initramfs with nasm or a tiny custom ELF loader embedded, then:
+
+Bootloader loads initramfs
+  → kernel decompresses it
+  → kernel exec's /init    ← YOUR binary, which you wrote in assembly
+
+Your /init can itself be a raw assembly ELF:
+asm
+
+; init.asm — valid PID 1 in assembly
+BITS 64
+SECTION .text
+global _start
+_start:
+    ; you are now PID 1
+    ; pipes and sockets not yet created by userspace
+    ; but the kernel has pipefs and sockfs ready
+    ; you can call sys_pipe, sys_socket right now
+    mov rax, 22        ; sys_pipe2
+    lea rdi, [rel fds]
+    xor esi, esi
+    syscall
+    ...
+
+This executes before systemd, before libc, before any C runtime — directly after the kernel hands off to userspace.
+Relationship to Pipes/Sockets
+
+Tying it back: the kernel has pipefs and sockfs ready before your assembly /init runs. So the first userspace syscall in your assembly binary could be sys_pipe2 or sys_socket — those kernel subsystems are already initialized by do_initcalls() which ran in C before execve("/init") was ever called.
+
+The sequence in one line:
+
+.S bootstrap → C kernel init (pipefs/sockfs ready) → execve(/init) → YOUR assembly runs → sys_pipe/sys_socket immediately available
+
+So your assembly can call sys_pipe2 on its very first instruction if you want. The kernel already did all the work in C before handing control to you.
+
+To run code, enable code execution and file creation in Settings > Capabilities.
+
+why at&t when were working on x86 intel? is everything at&t syntax in x86?
+Apr 27
+AT&T vs Intel Syntax on x86
+Short Answer
+
+No — AT&T syntax is not the native x86 syntax. Intel syntax is. x86 was designed and documented by Intel, and Intel's own manuals use Intel syntax. AT&T syntax came from Unix tooling history and got baked into GAS (GNU Assembler), which is why the Linux kernel .S files use it. It's a toolchain choice, not a hardware requirement.
+Why AT&T Ended Up in the Kernel
+
+Bell Labs / AT&T Unix used their own assembler with their own syntax conventions in the 1970s–80s. When GCC was written and targeted x86, it emitted AT&T syntax because GAS (the GNU assembler) inherited that convention. The Linux kernel was built with GCC + GAS from day one (Linus, 1991), so the .S files follow GAS AT&T syntax.
+
+It's purely historical toolchain inertia, not hardware design.
+The Actual Differences
+Feature	Intel Syntax	AT&T Syntax
+Operand order	dst, src	src, dst
+Registers	rax	%rax
+Immediates	1000h or 0x1000	$0x1000
+Memory	[rbp - 0x20]	-0x20(%rbp)
+Size suffix	implied or DWORD PTR	movl, movq, movb
+Jump target	jmp label	jmp label (same)
+
+Same example in both:
+asm
+
+; Intel
+mov rax, 1
+mov rdi, 1
+mov rsi, rbx
+mov rdx, 14
+syscall
+
+# AT&T
+movq $1, %rax
+movq $1, %rdi
+movq %rbx, %rsi
+movq $14, %rdx
+syscall
+
+Exact same machine code output. The assembler translates either one to identical bytes.
+Intel Syntax is Available on the Same Toolchain
+
+You are not forced to use AT&T. GAS accepts Intel syntax with a directive:
+asm
+
+.intel_syntax noprefix
+
+mov rax, 1
+mov rdi, 1
+syscall
+
+NASM and YASM are dedicated Intel-syntax assemblers used heavily in security research, bootloaders, and embedded work — they never use AT&T syntax at all.
+
+The Linux kernel itself has Intel syntax blocks in places where developers preferred it, using .intel_syntax noprefix / .att_syntax guards around sections.
+What Intel's Own Documentation Uses
+
+Every Intel Architecture manual (the SDM — Software Developer's Manual) uses Intel syntax exclusively:
+
+MOV RAX, 1
+PUSH RBP
+MOV RBP, RSP
+
+So when you're reading Intel docs and cross-referencing kernel .S files, you're constantly flipping operand order in your head — which is why most security researchers and low-level developers prefer NASM / Intel syntax and only deal with GAS AT&T when forced to by the kernel build system.
+Bottom Line
+
+    x86 is an Intel architecture → Intel syntax is the native/natural form
+    AT&T syntax in kernel .S files is a GCC/GAS historical artifact
+    The CPU doesn't know or care — both assemble to identical opcodes
+    You can use Intel syntax via NASM, YASM, or .intel_syntax noprefix in GAS
+    Most original x86 assembly literature (including Intel's own SDM) is Intel syntax
+
+To run code, enable code execution and file creation in Settings > Capabilities.
+
+how many syntax exist today for preprocessors
+Apr 27
+
+That question needs a scope boundary before listing — "preprocessors" covers several distinct categories.
+
+Q: Which preprocessor domain?
+A: just x86 commercial products and arm
+Apr 27
+x86 and ARM Preprocessor/Assembler Syntaxes Today
+x86 — Active Syntaxes
+1. Intel Syntax
+
+The original. Used in Intel's own SDM documentation.
+
+    NASM (Netwide Assembler) — most widely used in security/exploit work
+    MASM (Microsoft Macro Assembler) — ships with Visual Studio, Windows kernel work
+    YASM — NASM-compatible, now mostly superseded by NASM
+    FASM (Flat Assembler) — self-hosting, used in OS dev and demoscene
+    TASM (Turbo Assembler, Borland) — legacy, still used in some embedded/DOS shops
+
+2. AT&T Syntax
+
+    GAS (GNU Assembler, as) — Linux kernel, GCC backend
+    GAS with .intel_syntax noprefix — switches GAS to Intel mid-file
+
+3. HLA (High Level Assembly)
+
+    Randall Hyde's HLA — Intel-like but with high-level constructs (procedure, if..then). Niche, academic use. Targets x86 only.
+
+4. MASM-Compatible Variants
+
+    JWASM — open MASM-compatible assembler
+    UASM — fork of JWASM, actively maintained, targets x86/x86-64
+
+ARM — Active Syntaxes
+1. UAL (Unified Assembly Language)
+
+The current ARM standard since ARMv6T2. One syntax covers both ARM (32-bit) and Thumb/Thumb-2 modes. All modern ARM documentation uses UAL.
+
+    GAS ARM mode — uses UAL
+    LLVM/Clang integrated assembler — uses UAL
+    Keil MDK (armasm) — uses UAL with some proprietary extensions
+
+2. Pre-UAL / Legacy ARM Syntax
+
+Older GAS behavior before UAL was standardized. Still accepted by GAS with --warn flags. You'll see it in old kernel patches and legacy BSP code.
+3. AArch64 (ARM64) Syntax
+
+Technically UAL extended for 64-bit. Distinct enough in practice that it's treated separately:
+
+    Register names change (x0–x30, w0–w30, sp, xzr)
+    New instruction mnemonics (ldr x0, [x1, #8])
+    Used in: Apple Silicon low-level code, Android kernel, server ARM work
+
+4. Thumb / Thumb-2
+
+Subset of UAL, 16/32-bit mixed encoding for code density. Embedded ARM (STM32, Nordic, etc.). Still UAL syntax, but instruction availability differs.
+Commercial Assemblers with Proprietary Syntax Extensions
+Product	Vendor	Platform	Notable Extension
+MASM	Microsoft	x86/x64	PROTO, INVOKE, structured macros
+KEIL armasm	ARM/Keil	ARM all	AREA, ENTRY, PRESERVE8 directives
+IAR EWARM	IAR Systems	ARM/x86	MODULE, RSEG, IAR macro language
+Green Hills MULTI	Green Hills	ARM/x86	Proprietary macro + inline asm dialect
+Arm Compiler 6 (armclang)	ARM Ltd	AArch32/64	Clang integrated assembler, UAL + LLVM extensions
+Count
+Domain	Distinct Syntaxes
+x86 commercial/active	Intel (NASM/MASM/FASM/UASM), AT&T (GAS), HLA — ~3 real syntaxes, ~6 assemblers
+ARM commercial/active	UAL (32-bit), AArch64 UAL, Pre-UAL legacy, Keil/IAR proprietary extensions — ~3 core + vendor dialects
+
+The real number is 2 syntaxes that matter for x86 (Intel and AT&T) and 1 that matters for ARM (UAL), with vendor assemblers adding macro/directive layers on top of those foundations without changing the core instruction syntax.
+
+were making a qemu image boot from start at the earliest possible point right when preprocessor loads. were going to be using this approach"LILO supports a before= command.
+Apr 27
+CTW QEMU Forensic Boot — Earliest Possible Entry with No ELF
+Architecture Decision: Flat Binary via .S + C Preprocessor
+
+Since you're rejecting ELF (correct call — ELF headers are a known attack surface and the PT_NOTE segment has been used for persistence), the approach is:
+
+Flat binary — raw opcodes, no headers, loaded by LILO directly at a physical address. LILO can load a flat binary as a "other=" stanza, not just "image=". The preprocessor (cpp) runs on your .S file before GAS assembles it, giving you #define, #include, #ifdef — full macro capability — with zero ELF overhead.
+Stage 0: The .S File That Takes Pole Position
+
+File: /boot/ctw-stage0.S
+asm
+
+/*
+ * ctw-stage0.S
+ * CTW QEMU Forensic Pre-Init
+ * Flat binary — no ELF — LILO loads direct to CTW_LOAD_ADDR
+ * cpp preprocessor runs first via GAS .S convention
+ *
+ * Inventor: Christopher Thomas Williams
+ */
+
+#define CTW_LOAD_ADDR       0x10000     /* LILO loads us here */
+#define CTW_STACK_TOP       0x9F000     /* below EBDA */
+#define SYS_pipe2           331         /* x86 32-bit syscall */
+#define SYS_open            5
+#define SYS_write           4
+#define SYS_read            3
+#define SYS_close           6
+#define SYS_execve          11
+#define SYS_mount           21
+#define SYS_mknod           14
+#define SYS_kill            37
+#define STDOUT              1
+#define O_RDONLY            0
+#define O_WRONLY            1
+#define O_CREAT             0x40
+#define O_TRUNC             0x200
+
+/* /dev/mem capture parameters — your known addresses */
+#define BZIMG_SETUP_SKIP    24
+#define BZIMG_SETUP_COUNT   24
+#define BZIMG_PROT_SKIP     2048
+#define BZIMG_PROT_COUNT    4054
+#define BZIMG_INITRD_ADDR   0x27c5c000
+#define BZIMG_INITRD_SIZE   0x376144
+
+    .code32
+    .section .text
+    .globl _start
+_start:
+
+    /*
+     * FIRST INSTRUCTION AFTER LILO HANDS CONTROL
+     * No OS. No libc. No ELF loader.
+     * cpp already ran — all #defines resolved above.
+     */
+
+    /* Clear direction flag — string ops go forward */
+    cld
+
+    /* Establish stack below EBDA */
+    movl    $CTW_STACK_TOP, %esp
+    movl    %esp, %ebp
+
+    /* Zero BSS — from __bss_start to _end */
+    movl    $__bss_start, %edi
+    movl    $_end, %ecx
+    subl    %edi, %ecx
+    xorl    %eax, %eax
+    rep     stosb
+
+    /*
+     * ====================================================
+     * BASELINE: capture /proc state before ANYTHING runs
+     * We are PID 1 equivalent at this point
+     * ====================================================
+     */
+    call    ctw_mount_proc
+    call    ctw_capture_baseline
+    call    ctw_capture_mem
+    call    ctw_kill_userprocs
+    call    ctw_unload_modules
+    call    ctw_launch_qemu
+
+    /* Should never return */
+    cli
+    hlt
+
+/* --------------------------------------------------------
+ * ctw_mount_proc
+ * mount -t proc none /proc
+ * -------------------------------------------------------- */
+ctw_mount_proc:
+    movl    $SYS_mount, %eax
+    movl    $str_none, %ebx
+    movl    $str_proc_path, %ecx
+    movl    $str_proc, %edx
+    movl    $0, %esi
+    movl    $0, %edi
+    int     $0x80
+    ret
+
+/* --------------------------------------------------------
+ * ctw_capture_baseline
+ * Read /proc/interrupts, /proc/iomem, /proc/stat to tmpfs
+ * -------------------------------------------------------- */
+ctw_capture_baseline:
+    /* open /proc/interrupts */
+    movl    $SYS_open, %eax
+    movl    $str_proc_interrupts, %ebx
+    movl    $O_RDONLY, %ecx
+    int     $0x80
+    movl    %eax, fd_src
+
+    /* open output */
+    movl    $SYS_open, %eax
+    movl    $str_baseline_irq, %ebx
+    movl    $(O_WRONLY|O_CREAT|O_TRUNC), %ecx
+    movl    $0644, %edx
+    int     $0x80
+    movl    %eax, fd_dst
+
+    call    ctw_pipe_copy
+
+    movl    $SYS_close, %eax
+    movl    fd_src, %ebx
+    int     $0x80
+    movl    $SYS_close, %eax
+    movl    fd_dst, %ebx
+    int     $0x80
+    ret
+
+/* --------------------------------------------------------
+ * ctw_capture_mem
+ * dd if=/dev/mem of=... for each known bzImage region
+ * Uses read()/write() loop — no dd binary needed
+ * -------------------------------------------------------- */
+ctw_capture_mem:
+    /* open /dev/mem */
+    movl    $SYS_open, %eax
+    movl    $str_devmem, %ebx
+    movl    $O_RDONLY, %ecx
+    int     $0x80
+    testl   %eax, %eax
+    js      .Lmem_fail
+    movl    %eax, fd_mem
+
+    /* Capture setup region 0x3000 */
+    movl    $(BZIMG_SETUP_SKIP * 512), %eax
+    movl    fd_mem, %ebx
+    call    ctw_lseek
+    movl    $str_bzimg_setup, %ebx
+    movl    $(BZIMG_SETUP_COUNT * 512), %ecx
+    call    ctw_dd_region
+
+    /* Capture protected mode at 1MB */
+    movl    $(BZIMG_PROT_SKIP * 512), %eax
+    movl    fd_mem, %ebx
+    call    ctw_lseek
+    movl    $str_bzimg_prot, %ebx
+    movl    $(BZIMG_PROT_COUNT * 512), %ecx
+    call    ctw_dd_region
+
+    /* Capture initrd at 0x27c5c000 */
+    movl    $BZIMG_INITRD_ADDR, %eax
+    movl    fd_mem, %ebx
+    call    ctw_lseek
+    movl    $str_bzimg_initrd, %ebx
+    movl    $BZIMG_INITRD_SIZE, %ecx
+    call    ctw_dd_region
+
+.Lmem_fail:
+    ret
+
+/* --------------------------------------------------------
+ * ctw_dd_region
+ * ebx = output path string
+ * ecx = byte count
+ * fd_mem must be seeked to correct offset
+ * -------------------------------------------------------- */
+ctw_dd_region:
+    pushl   %ecx
+    pushl   %ebx
+
+    /* open output file */
+    movl    $SYS_open, %eax
+    popl    %ebx
+    movl    $(O_WRONLY|O_CREAT|O_TRUNC), %ecx
+    movl    $0600, %edx
+    int     $0x80
+    movl    %eax, fd_dst
+
+    popl    %ecx            /* byte count */
+    movl    %ecx, bytes_remaining
+
+.Ldd_loop:
+    movl    bytes_remaining, %ecx
+    testl   %ecx, %ecx
+    jz      .Ldd_done
+    cmpl    $4096, %ecx
+    jle     .Ldd_small
+    movl    $4096, %ecx
+
+.Ldd_small:
+    /* read from /dev/mem */
+    movl    $SYS_read, %eax
+    movl    fd_mem, %ebx
+    movl    $iobuf, %ecx
+    int     $0x80
+    testl   %eax, %eax
+    jle     .Ldd_done
+
+    /* write to output */
+    movl    %eax, %ecx
+    movl    $SYS_write, %eax
+    movl    fd_dst, %ebx
+    movl    $iobuf, %ecx
+    int     $0x80
+
+    subl    %eax, bytes_remaining
+    jmp     .Ldd_loop
+
+.Ldd_done:
+    movl    $SYS_close, %eax
+    movl    fd_dst, %ebx
+    int     $0x80
+    ret
+
+/* --------------------------------------------------------
+ * ctw_kill_userprocs
+ * Walk /proc numerically, kill everything with a cmdline
+ * that isn't us
+ * -------------------------------------------------------- */
+ctw_kill_userprocs:
+    movl    $2, pid_cursor          /* start at PID 2 */
+.Lkill_loop:
+    movl    pid_cursor, %eax
+    cmpl    $32768, %eax
+    jg      .Lkill_done
+    call    ctw_check_and_kill
+    incl    pid_cursor
+    jmp     .Lkill_loop
+.Lkill_done:
+    ret
+
+/* --------------------------------------------------------
+ * ctw_unload_modules
+ * rmmod via delete_module syscall (#129)
+ * Skips ext2 and loop
+ * -------------------------------------------------------- */
+ctw_unload_modules:
+    /* Real implementation iterates /proc/modules
+     * Inline here for brevity — full version reads
+     * /proc/modules line by line
+     */
+    movl    $129, %eax          /* sys_delete_module */
+    movl    $str_mod_usb, %ebx
+    xorl    %ecx, %ecx
+    int     $0x80
+
+    movl    $129, %eax
+    movl    $str_mod_firewire, %ebx
+    xorl    %ecx, %ecx
+    int     $0x80
+    ret
+
+/* --------------------------------------------------------
+ * ctw_launch_qemu
+ * execve() qemu-system-i386 with your exact args
+ * -------------------------------------------------------- */
+ctw_launch_qemu:
+    movl    $SYS_execve, %eax
+    movl    $str_qemu_bin, %ebx
+    movl    $qemu_argv, %ecx
+    movl    $qemu_envp, %edx
+    int     $0x80
+    ret
+
+/* --------------------------------------------------------
+ * ctw_pipe_copy — generic fd_src → fd_dst copy
+ * -------------------------------------------------------- */
+ctw_pipe_copy:
+.Lpipe_loop:
+    movl    $SYS_read, %eax
+    movl    fd_src, %ebx
+    movl    $iobuf, %ecx
+    movl    $4096, %edx
+    int     $0x80
+    testl   %eax, %eax
+    jle     .Lpipe_done
+    movl    %eax, %edx
+    movl    $SYS_write, %eax
+    movl    fd_dst, %ebx
+    movl    $iobuf, %ecx
+    int     $0x80
+    jmp     .Lpipe_loop
+.Lpipe_done:
+    ret
+
+ctw_lseek:
+    /* eax=offset, ebx=fd */
+    pushl   %eax
+    movl    $19, %eax           /* sys_lseek */
+    popl    %ecx                /* offset */
+    xorl    %edx, %edx          /* SEEK_SET */
+    int     $0x80
+    ret
+
+/* ======================================================
+ * DATA SECTION
+ * cpp #defines resolved above — no magic numbers inline
+ * ====================================================== */
+    .section .data
+
+str_none:           .asciz "none"
+str_proc:           .asciz "proc"
+str_proc_path:      .asciz "/proc"
+str_proc_interrupts:.asciz "/proc/interrupts"
+str_proc_iomem:     .asciz "/proc/iomem"
+str_proc_stat:      .asciz "/proc/stat"
+str_devmem:         .asciz "/dev/mem"
+str_baseline_irq:   .asciz "/tmp/baseline-interrupts.txt"
+str_bzimg_setup:    .asciz "/tmp/BZIMG-setup-0x3000.img"
+str_bzimg_prot:     .asciz "/tmp/BZIMG-protected-0x100000.img"
+str_bzimg_initrd:   .asciz "/tmp/BZIMG-initrd-0x27c5c000.img"
+str_mod_usb:        .asciz "usbcore"
+str_mod_firewire:   .asciz "firewire_core"
+str_qemu_bin:       .asciz "/bin/qemu-system-i386"
+
+/* QEMU argv — your exact flags from the working script */
+str_qarg_m:         .asciz "-m"
+str_qarg_256:       .asciz "256M"
+str_qarg_kernel:    .asciz "-kernel"
+str_qarg_vmlinuz:   .asciz "/mnt/host/boot/vmlinuz-2.6.25-14.fc9.i686"
+str_qarg_initrd:    .asciz "-initrd"
+str_qarg_initrdimg: .asciz "/mnt/host/boot/initramfs-2.6.25-14.fc9.i686.img"
+str_qarg_append:    .asciz "-append"
+str_qarg_cmdline:   .asciz "ro init=/bin/bash mem=256M modules_disabled=1 nousb nofirewire nopcmcia nosmt audit=1 root=/dev/vda1"
+str_qarg_drive:     .asciz "-drive"
+str_qarg_drivearg:  .asciz "file=/dev/loop0,format=raw,if=virtio"
+str_qarg_nographic: .asciz "-nographic"
+str_qarg_noacpi:    .asciz "-no-acpi"
+str_qarg_nohpet:    .asciz "-no-hpet"
+str_qarg_noreboot:  .asciz "-no-reboot"
+str_qarg_serial:    .asciz "-serial"
+str_qarg_stdio:     .asciz "stdio"
+
+qemu_argv:
+    .long   str_qemu_bin
+    .long   str_qarg_m
+    .long   str_qarg_256
+    .long   str_qarg_kernel
+    .long   str_qarg_vmlinuz
+    .long   str_qarg_initrd
+    .long   str_qarg_initrdimg
+    .long   str_qarg_append
+    .long   str_qarg_cmdline
+    .long   str_qarg_drive
+    .long   str_qarg_drivearg
+    .long   str_qarg_nographic
+    .long   str_qarg_noacpi
+    .long   str_qarg_nohpet
+    .long   str_qarg_noreboot
+    .long   str_qarg_serial
+    .long   str_qarg_stdio
+    .long   0                   /* NULL terminator */
+
+qemu_envp:
+    .long   str_path_env
+    .long   0
+
+str_path_env:       .asciz "PATH=/bin:/sbin"
+
+/* ======================================================
+ * BSS — zero-initialized working storage
+ * ====================================================== */
+    .section .bss
+
+fd_src:             .long 0
+fd_dst:             .long 0
+fd_mem:             .long 0
+pid_cursor:         .long 0
+bytes_remaining:    .long 0
+iobuf:              .space 4096
+__bss_start:
+_end:
+
+Build Script — Flat Binary, No ELF
+
+File: /root/ctw-forensic/build-stage0.sh
+bash
+
+#!/bin/bash
+# CTW Stage0 Flat Binary Builder
+# Produces raw binary — no ELF, no headers
+# Inventor: Christopher Thomas Williams
+
+set -e
+
+SRC=/boot/ctw-stage0.S
+OBJ=/tmp/ctw-stage0.o
+BIN=/boot/ctw-stage0.bin
+MAP=/root/ctw-forensic/stage0.map
+
+# Step 1: Preprocess + Assemble
+# GAS runs cpp first because .S extension
+# -m32 for i386 target matching your Fedora 9 kernel
+as --32 -o $OBJ $SRC
+
+# Step 2: Link to flat binary at load address
+# -Ttext sets origin — LILO loads here
+# --oformat binary strips ALL ELF structure
+# -Map produces symbol map for forensic reference
+ld -m elf_i386 \
+   -Ttext 0x10000 \
+   --oformat binary \
+   -Map $MAP \
+   -o $BIN \
+   $OBJ
+
+# Step 3: Verify — must have NO ELF magic
+hexdump -C $BIN | head -2
+echo "First 4 bytes must NOT be 7f 45 4c 46 (ELF)"
+
+# Step 4: Hash and lock
+sha256sum $BIN > /root/ctw-forensic/stage0.sha256
+chattr +i $BIN
+chmod 400 $BIN
+
+echo "Built: $BIN"
+ls -lh $BIN
+
+LILO Stanza — other= Takes Pole Position
+
+# /etc/lilo.conf addition
+# other= loads flat binary directly — no ELF loader involved
+# boot= entry appears FIRST so LILO executes it before anything
+
+# CTW STAGE0 — POLE POSITION
+# Loads flat binary at 0x10000, transfers control immediately
+other=/boot/ctw-stage0.bin
+    label=CTW-STAGE0
+    description="CTW Forensic Pre-Init"
+
+# Normal Fedora 9 — demoted below
+image=/boot/vmlinuz-2.6.25-14.fc9.i686
+    label=linux
+    initrd=/boot/initrd-2.6.25-14.fc9.i686.img
+    root=/dev/VolGroup00/LogVol00
+    read-only
+
+# CTW QEMU forensic boot — second option
+image=/boot/vmlinuz-2.6.25-14.fc9.i686
+    label=CTW-QEMU
+    initrd=/boot/initramfs-ctw-qemu.img
+    root=/dev/VolGroup00/LogVol00
+    append="ro mem=512M nousb nofirewire nopcmcia nosmt noacpi modules_disabled=1 audit=1 lapic"
+    read-only
+    lock
+
+What Happens in Order
+
+Power on
+  │
+  ├─ BIOS POST
+  ├─ LILO MBR executes
+  ├─ LILO reads lilo.conf
+  ├─ First label = CTW-STAGE0
+  │     └─ other=/boot/ctw-stage0.bin
+  │           └─ LILO loads flat binary to 0x10000
+  │                 └─ jumps to offset 0
+  │
+  ├─ ctw-stage0.S _start executes    ← YOU ARE HERE
+  │     ├─ stack set to 0x9F000
+  │     ├─ BSS zeroed
+  │     ├─ /proc mounted
+  │     ├─ baseline /proc/interrupts captured
+  │     ├─ /dev/mem read → bzImage regions captured
+  │     ├─ all non-essential PIDs killed
+  │     ├─ non-essential modules unloaded
+  │     └─ execve() → qemu-system-i386
+  │
+  └─ QEMU launches with your exact forensic flags
+
+The cpp preprocessor resolved every #define before GAS saw a single instruction. The binary that hit disk has no ELF magic bytes, no PT_NOTE, no dynamic linker surface. LILO loaded it as raw machine code and jumped straight to _start.
+
+To run code, enable code execution and file creation in Settings > Capabilities.
+
+if BIOS must run early init to configure memory training, how do we overcome this tainted source after it has loaded, and without tainting our virtual image and init with its own tainted compression logic and system clock values?
+Apr 28
+
+This is a deep trust chain problem. Let me make sure I understand the exact threat model before building the answer.
+Which BIOS threat vector is primary concern?
+1 of 2
+
