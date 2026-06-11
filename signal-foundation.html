@@ -1,0 +1,1036 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SIGNAL // Forensic DAW — Foundation v0.1</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;1,9..144,300&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-0: #0a0d0c;
+    --bg-1: #0f1311;
+    --bg-2: #141917;
+    --bg-3: #1a201d;
+    --line: #1f2622;
+    --line-bright: #2a332d;
+    --ink-0: #d8e4dc;
+    --ink-1: #8a9a91;
+    --ink-2: #4f5c55;
+    --ink-3: #2e3833;
+
+    /* instrument accents — each instrument gets one, used consistently everywhere */
+    --wifi:     #4ade80;   /* phosphor green — primary */
+    --bt:       #60a5fa;   /* cobalt */
+    --gps:      #fbbf24;   /* amber */
+    --ublox:    #f97316;   /* ember */
+    --geiger:   #ef4444;   /* warning red */
+    --audio:    #a78bfa;   /* violet */
+    --video:    #22d3ee;   /* cyan */
+    --nlp:      #f472b6;   /* magenta */
+
+    --grid: rgba(74, 222, 128, 0.04);
+    --grid-major: rgba(74, 222, 128, 0.08);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body {
+    height: 100%;
+    background: var(--bg-0);
+    color: var(--ink-0);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    font-weight: 400;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* faint CRT grain over the whole app */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      repeating-linear-gradient(
+        0deg,
+        transparent 0,
+        transparent 2px,
+        rgba(255,255,255,0.012) 2px,
+        rgba(255,255,255,0.012) 3px
+      );
+    pointer-events: none;
+    z-index: 9999;
+    mix-blend-mode: overlay;
+  }
+
+  .app {
+    display: grid;
+    grid-template-rows: 32px 1fr 22px;
+    grid-template-columns: 220px 1fr 280px;
+    grid-template-areas:
+      "topbar  topbar   topbar"
+      "rail    stage    inspect"
+      "status  status   status";
+    height: 100vh;
+    width: 100vw;
+  }
+
+  /* ===== TOP BAR ===== */
+  .topbar {
+    grid-area: topbar;
+    background: var(--bg-1);
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    align-items: center;
+    padding: 0 16px;
+    gap: 24px;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+  }
+  .brand {
+    font-family: 'Fraunces', serif;
+    font-style: italic;
+    font-weight: 300;
+    font-size: 15px;
+    letter-spacing: 0.02em;
+    color: var(--ink-0);
+  }
+  .brand::after {
+    content: 'v0.1';
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    color: var(--ink-2);
+    margin-left: 8px;
+    letter-spacing: 0.1em;
+    vertical-align: super;
+  }
+  .menu {
+    display: flex;
+    gap: 18px;
+    color: var(--ink-1);
+    text-transform: uppercase;
+  }
+  .menu span:hover { color: var(--ink-0); cursor: pointer; }
+
+  .clock {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    color: var(--ink-1);
+  }
+  .clock .ntp {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .clock .dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--wifi);
+    box-shadow: 0 0 6px var(--wifi);
+    animation: pulse 2s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+  .clock .time {
+    color: var(--ink-0);
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+  }
+  .clock .drift { color: var(--ink-2); font-size: 10px; }
+
+  /* ===== INSTRUMENT RAIL ===== */
+  .rail {
+    grid-area: rail;
+    background: var(--bg-1);
+    border-right: 1px solid var(--line);
+    overflow-y: auto;
+    padding: 16px 0;
+  }
+  .rail-section {
+    padding: 0 14px;
+    margin-bottom: 20px;
+  }
+  .rail-label {
+    font-size: 9px;
+    letter-spacing: 0.15em;
+    color: var(--ink-2);
+    text-transform: uppercase;
+    margin-bottom: 10px;
+    display: flex;
+    justify-content: space-between;
+  }
+  .rail-label::after {
+    content: '';
+    flex: 1;
+    border-bottom: 1px solid var(--line);
+    margin-left: 10px;
+    margin-bottom: 4px;
+  }
+
+  .instrument {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    margin-bottom: 2px;
+    background: transparent;
+    border-left: 2px solid transparent;
+    cursor: pointer;
+    transition: background 0.15s;
+    position: relative;
+  }
+  .instrument:hover { background: var(--bg-2); }
+  .instrument.active {
+    background: var(--bg-2);
+    border-left-color: var(--accent);
+  }
+  .instrument .toggle {
+    width: 14px; height: 14px;
+    border: 1px solid var(--ink-3);
+    background: var(--bg-0);
+    position: relative;
+    flex-shrink: 0;
+  }
+  .instrument.on .toggle {
+    border-color: var(--accent);
+    background: var(--accent);
+    box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 60%, transparent);
+  }
+  .instrument.on .toggle::after {
+    content: '';
+    position: absolute;
+    inset: 3px;
+    background: var(--bg-0);
+  }
+  .instrument .name {
+    flex: 1;
+    font-size: 11px;
+    color: var(--ink-0);
+    letter-spacing: 0.02em;
+  }
+  .instrument .count {
+    font-size: 9px;
+    color: var(--ink-2);
+    font-variant-numeric: tabular-nums;
+  }
+  .instrument.on .count { color: var(--accent); }
+
+  /* ===== STAGE ===== */
+  .stage {
+    grid-area: stage;
+    background: var(--bg-0);
+    display: grid;
+    grid-template-rows: 200px 1fr;
+    overflow: hidden;
+  }
+
+  /* master score — the conductor view */
+  .score {
+    border-bottom: 1px solid var(--line-bright);
+    position: relative;
+    background:
+      linear-gradient(to bottom, var(--bg-1), var(--bg-0));
+  }
+  .score-header {
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 28px;
+    padding: 0 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid var(--line);
+    background: rgba(10,13,12,0.8);
+    backdrop-filter: blur(4px);
+    z-index: 5;
+  }
+  .score-title {
+    font-family: 'Fraunces', serif;
+    font-style: italic;
+    font-size: 13px;
+    color: var(--ink-0);
+    letter-spacing: 0.02em;
+  }
+  .score-title .sub {
+    font-family: 'JetBrains Mono', monospace;
+    font-style: normal;
+    font-size: 9px;
+    color: var(--ink-2);
+    letter-spacing: 0.12em;
+    margin-left: 12px;
+    text-transform: uppercase;
+  }
+  .score-controls {
+    display: flex;
+    gap: 12px;
+    font-size: 10px;
+    color: var(--ink-1);
+  }
+  .score-controls .ctrl {
+    padding: 2px 8px;
+    border: 1px solid var(--line-bright);
+    cursor: pointer;
+    letter-spacing: 0.08em;
+  }
+  .score-controls .ctrl:hover { color: var(--ink-0); border-color: var(--ink-2); }
+  .score-controls .ctrl.live {
+    color: var(--wifi);
+    border-color: color-mix(in srgb, var(--wifi) 40%, transparent);
+  }
+
+  .score-canvas-wrap {
+    position: absolute;
+    top: 28px; left: 0; right: 0; bottom: 0;
+  }
+  canvas { display: block; width: 100%; height: 100%; }
+
+  /* individual instrument panel */
+  .panel {
+    position: relative;
+    overflow: hidden;
+  }
+  .panel-header {
+    height: 36px;
+    padding: 0 16px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    border-bottom: 1px solid var(--line);
+    background: var(--bg-1);
+  }
+  .panel-badge {
+    font-size: 9px;
+    padding: 3px 8px;
+    background: color-mix(in srgb, var(--wifi) 12%, transparent);
+    color: var(--wifi);
+    letter-spacing: 0.15em;
+    border: 1px solid color-mix(in srgb, var(--wifi) 25%, transparent);
+  }
+  .panel-name {
+    font-family: 'Fraunces', serif;
+    font-style: italic;
+    font-size: 14px;
+    color: var(--ink-0);
+  }
+  .panel-stats {
+    margin-left: auto;
+    display: flex;
+    gap: 20px;
+    font-size: 10px;
+    color: var(--ink-1);
+  }
+  .panel-stats .stat {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 1px;
+  }
+  .panel-stats .stat .label {
+    font-size: 8px;
+    color: var(--ink-2);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  .panel-stats .stat .val {
+    color: var(--ink-0);
+    font-variant-numeric: tabular-nums;
+    font-weight: 500;
+  }
+  .panel-stats .stat .val.accent { color: var(--wifi); }
+
+  .panel-canvas-wrap {
+    position: absolute;
+    top: 36px; left: 0; right: 0; bottom: 0;
+  }
+
+  /* tooltip */
+  .tooltip {
+    position: absolute;
+    pointer-events: none;
+    background: var(--bg-1);
+    border: 1px solid var(--line-bright);
+    border-left: 2px solid var(--wifi);
+    padding: 10px 12px;
+    min-width: 260px;
+    max-width: 320px;
+    font-size: 10px;
+    z-index: 100;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+    opacity: 0;
+    transform: translate(0, 0);
+    transition: opacity 0.1s;
+  }
+  .tooltip.visible { opacity: 1; }
+  .tooltip .tt-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 8px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--line);
+  }
+  .tooltip .tt-ssid {
+    font-family: 'Fraunces', serif;
+    font-style: italic;
+    font-size: 13px;
+    color: var(--ink-0);
+  }
+  .tooltip .tt-bssid {
+    font-size: 9px;
+    color: var(--ink-2);
+    letter-spacing: 0.05em;
+    margin-top: 2px;
+  }
+  .tooltip .tt-current {
+    color: var(--wifi);
+    font-size: 14px;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+  }
+  .tooltip .tt-meta {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 4px 12px;
+    color: var(--ink-1);
+    margin-bottom: 8px;
+  }
+  .tooltip .tt-meta .k { color: var(--ink-2); font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; }
+  .tooltip .tt-meta .v { color: var(--ink-0); font-variant-numeric: tabular-nums; }
+  .tooltip .tt-history-label {
+    font-size: 8px;
+    color: var(--ink-2);
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    margin-top: 8px;
+    margin-bottom: 6px;
+  }
+  .tooltip .tt-history {
+    max-height: 140px;
+    overflow-y: auto;
+    font-size: 10px;
+  }
+  .tooltip .tt-row {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    gap: 8px;
+    padding: 2px 0;
+    font-variant-numeric: tabular-nums;
+    border-bottom: 1px dotted var(--line);
+  }
+  .tooltip .tt-row:last-child { border-bottom: none; }
+  .tooltip .tt-row .ts { color: var(--ink-2); font-size: 9px; }
+  .tooltip .tt-row .dbm { color: var(--ink-0); }
+  .tooltip .tt-row .delta.up { color: #4ade80; }
+  .tooltip .tt-row .delta.down { color: #f87171; }
+  .tooltip .tt-row .delta.flat { color: var(--ink-2); }
+
+  /* ===== INSPECTOR ===== */
+  .inspect {
+    grid-area: inspect;
+    background: var(--bg-1);
+    border-left: 1px solid var(--line);
+    overflow-y: auto;
+    padding: 14px;
+  }
+  .inspect-title {
+    font-family: 'Fraunces', serif;
+    font-style: italic;
+    font-size: 15px;
+    margin-bottom: 4px;
+  }
+  .inspect-sub {
+    font-size: 9px;
+    color: var(--ink-2);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-bottom: 16px;
+  }
+  .inspect-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .inspect-row {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    gap: 10px;
+    padding: 6px 8px;
+    font-size: 10px;
+    align-items: center;
+    cursor: pointer;
+  }
+  .inspect-row:hover { background: var(--bg-2); }
+  .inspect-row .ssid { color: var(--ink-0); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .inspect-row .ssid.hidden { font-style: italic; color: var(--ink-1); }
+  .inspect-row .dbm { color: var(--wifi); font-variant-numeric: tabular-nums; font-weight: 500; }
+  .inspect-row .bar {
+    width: 36px; height: 2px;
+    background: var(--bg-3);
+    position: relative;
+  }
+  .inspect-row .bar::after {
+    content: '';
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    background: var(--wifi);
+    width: var(--strength, 50%);
+  }
+
+  /* ===== STATUS BAR ===== */
+  .status {
+    grid-area: status;
+    background: var(--bg-1);
+    border-top: 1px solid var(--line);
+    display: flex;
+    align-items: center;
+    padding: 0 14px;
+    gap: 20px;
+    font-size: 9px;
+    color: var(--ink-2);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+  .status .seg { display: flex; gap: 6px; align-items: center; }
+  .status .seg .v { color: var(--ink-0); font-variant-numeric: tabular-nums; }
+  .status .push { margin-left: auto; }
+
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--line-bright); }
+  ::-webkit-scrollbar-thumb:hover { background: var(--ink-3); }
+</style>
+</head>
+<body>
+
+<div class="app">
+
+  <!-- ===== TOP BAR ===== -->
+  <header class="topbar">
+    <div class="brand">SIGNAL</div>
+    <nav class="menu">
+      <span>File</span><span>Session</span><span>Instruments</span><span>Heuristics</span><span>View</span>
+    </nav>
+    <div class="clock">
+      <div class="ntp"><div class="dot"></div>NTP LOCK</div>
+      <div class="time" id="utc-clock">--:--:--.---</div>
+      <div class="drift" id="drift">±0.4ms</div>
+    </div>
+  </header>
+
+  <!-- ===== INSTRUMENT RAIL ===== -->
+  <aside class="rail">
+    <div class="rail-section">
+      <div class="rail-label">RF / Wireless</div>
+      <div class="instrument on active" style="--accent: var(--wifi);">
+        <div class="toggle"></div><div class="name">WiFi Scanner</div><div class="count">42</div>
+      </div>
+      <div class="instrument" style="--accent: var(--bt);">
+        <div class="toggle"></div><div class="name">Bluetooth</div><div class="count">—</div>
+      </div>
+      <div class="instrument" style="--accent: var(--gps);">
+        <div class="toggle"></div><div class="name">GPS</div><div class="count">—</div>
+      </div>
+      <div class="instrument" style="--accent: var(--ublox);">
+        <div class="toggle"></div><div class="name">UBLOX Sat</div><div class="count">—</div>
+      </div>
+    </div>
+    <div class="rail-section">
+      <div class="rail-label">Environmental</div>
+      <div class="instrument" style="--accent: var(--geiger);">
+        <div class="toggle"></div><div class="name">Geiger</div><div class="count">—</div>
+      </div>
+      <div class="instrument" style="--accent: var(--audio);">
+        <div class="toggle"></div><div class="name">Audio</div><div class="count">—</div>
+      </div>
+      <div class="instrument" style="--accent: var(--video);">
+        <div class="toggle"></div><div class="name">Video</div><div class="count">—</div>
+      </div>
+    </div>
+    <div class="rail-section">
+      <div class="rail-label">Inference</div>
+      <div class="instrument" style="--accent: var(--nlp);">
+        <div class="toggle"></div><div class="name">NLP</div><div class="count">—</div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ===== STAGE ===== -->
+  <main class="stage">
+
+    <!-- master score: all enabled instruments overlaid -->
+    <section class="score">
+      <div class="score-header">
+        <div class="score-title">Master Score <span class="sub">— all active instruments // synchronized timeline</span></div>
+        <div class="score-controls">
+          <div class="ctrl live">● LIVE</div>
+          <div class="ctrl">60s</div>
+          <div class="ctrl">PAUSE</div>
+          <div class="ctrl">EXPORT</div>
+        </div>
+      </div>
+      <div class="score-canvas-wrap"><canvas id="score-canvas"></canvas></div>
+    </section>
+
+    <!-- WiFi instrument panel -->
+    <section class="panel" id="wifi-panel">
+      <div class="panel-header">
+        <div class="panel-badge">I-01 · WIFI</div>
+        <div class="panel-name">WiFi Scanner</div>
+        <div class="panel-stats">
+          <div class="stat"><div class="label">Active APs</div><div class="val accent" id="ap-count">42</div></div>
+          <div class="stat"><div class="label">Events / sec</div><div class="val" id="eps">12.4</div></div>
+          <div class="stat"><div class="label">Strongest</div><div class="val" id="strongest">−38 dBm</div></div>
+          <div class="stat"><div class="label">Threshold</div><div class="val">−89 dBm</div></div>
+          <div class="stat"><div class="label">Band</div><div class="val">2.4 / 5</div></div>
+        </div>
+      </div>
+      <div class="panel-canvas-wrap">
+        <canvas id="wifi-canvas"></canvas>
+        <div class="tooltip" id="tooltip"></div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ===== INSPECTOR ===== -->
+  <aside class="inspect">
+    <div class="inspect-title">Signal Register</div>
+    <div class="inspect-sub">WiFi · live roster</div>
+    <div class="inspect-list" id="inspect-list"></div>
+  </aside>
+
+  <!-- ===== STATUS ===== -->
+  <footer class="status">
+    <div class="seg">CORE <span class="v">C++ 0.14ms</span></div>
+    <div class="seg">UI <span class="v">C# / Skia 60fps</span></div>
+    <div class="seg">HEURISTICS <span class="v">Python idle</span></div>
+    <div class="seg">BUS <span class="v">ZMQ tcp://127.0.0.1:5556</span></div>
+    <div class="seg push">EVENTS <span class="v" id="total-events">0</span></div>
+    <div class="seg">SESSION <span class="v" id="session-time">00:00:00</span></div>
+  </footer>
+
+</div>
+
+<script>
+// ============================================================================
+// SIMULATION LAYER — stands in for the real C++ WiFi scanner until that lands.
+// Emits events in the same shape the production bus will use.
+// ============================================================================
+
+const NOW_START = performance.now();
+const SESSION_START = Date.now();
+
+// mock AP population — represents what `WlanGetNetworkBssList` would return
+const MOCK_APS = [
+  { ssid: 'TELUS4829',       bssid: 'A4:2B:8C:11:02:D4', band: '5',   baseline: -42, jitter: 4 },
+  { ssid: 'BELL_5G_EXT',     bssid: '8C:04:FF:19:AA:01', band: '5',   baseline: -51, jitter: 6 },
+  { ssid: 'ShawMobile-9921', bssid: '1C:3B:F3:7E:88:A2', band: '2.4', baseline: -58, jitter: 3 },
+  { ssid: '',                bssid: 'DA:A1:19:0C:44:E8', band: '5',   baseline: -47, jitter: 8, hidden: true },
+  { ssid: 'eduroam',         bssid: 'E4:38:7E:52:00:11', band: '5',   baseline: -63, jitter: 5 },
+  { ssid: 'CoffeeShop_Free', bssid: '20:0C:C8:FD:9A:12', band: '2.4', baseline: -71, jitter: 7 },
+  { ssid: 'NETGEAR_7',       bssid: 'C4:04:15:88:2B:FE', band: '2.4', baseline: -76, jitter: 4 },
+  { ssid: '',                bssid: 'F0:9F:C2:8A:11:C0', band: '5',   baseline: -55, jitter: 10, hidden: true },
+  { ssid: 'linksys-guest',   bssid: '48:F8:B3:62:0E:99', band: '2.4', baseline: -68, jitter: 5 },
+  { ssid: 'XFINITY_OPEN',    bssid: '00:25:00:FF:1A:3B', band: '5',   baseline: -81, jitter: 6 },
+  { ssid: 'CGI_CORP',        bssid: '70:3A:CB:40:5F:AA', band: '5',   baseline: -45, jitter: 3 },
+  { ssid: 'HP-Setup-9D',     bssid: 'B4:B6:86:AE:9D:77', band: '2.4', baseline: -62, jitter: 4 },
+];
+
+// per-BSSID state: rolling history { t, dbm }
+const apState = new Map();
+MOCK_APS.forEach(ap => apState.set(ap.bssid, { ...ap, history: [], current: ap.baseline }));
+
+// generate one scan tick (~ every 2000ms in reality; we go faster for demo)
+function emitScanTick() {
+  const t = performance.now() - NOW_START;
+  apState.forEach(ap => {
+    // random-walk around baseline within jitter envelope
+    const prev = ap.current;
+    const drift = (Math.random() - 0.5) * ap.jitter;
+    const next = Math.max(-95, Math.min(-25, ap.baseline + drift));
+    ap.current = next;
+    ap.history.push({ t, dbm: next, delta: next - prev });
+    if (ap.history.length > 600) ap.history.shift(); // keep ~10 min of data
+  });
+  totalEvents += apState.size;
+}
+
+// ============================================================================
+// RENDER LAYER
+// ============================================================================
+
+const WINDOW_MS = 60_000;   // visible window = last 60s
+const DB_MIN = -95;
+const DB_MAX = -25;
+
+function setupCanvas(canvas) {
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  return { ctx, w: rect.width, h: rect.height };
+}
+
+function drawGrid(ctx, w, h, opts = {}) {
+  const { labels = true, yTicks = 5, xTicks = 6 } = opts;
+  ctx.strokeStyle = 'rgba(74, 222, 128, 0.04)';
+  ctx.lineWidth = 1;
+
+  // horizontal gridlines (dBm levels)
+  ctx.font = '9px "JetBrains Mono", monospace';
+  ctx.fillStyle = 'rgba(138, 154, 145, 0.5)';
+  ctx.textBaseline = 'middle';
+  for (let i = 0; i <= yTicks; i++) {
+    const y = Math.round((i / yTicks) * h) + 0.5;
+    const db = DB_MAX - (i / yTicks) * (DB_MAX - DB_MIN);
+    ctx.beginPath();
+    ctx.moveTo(40, y);
+    ctx.lineTo(w, y);
+    ctx.stroke();
+    if (labels) ctx.fillText(`${Math.round(db)}`, 6, y);
+  }
+
+  // vertical gridlines (time)
+  ctx.textBaseline = 'top';
+  for (let i = 0; i <= xTicks; i++) {
+    const x = 40 + Math.round((i / xTicks) * (w - 40)) + 0.5;
+    const secsAgo = WINDOW_MS / 1000 - (i / xTicks) * (WINDOW_MS / 1000);
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, h);
+    ctx.stroke();
+    if (labels && i < xTicks) ctx.fillText(`-${Math.round(secsAgo)}s`, x + 4, h - 14);
+  }
+
+  // unit label
+  if (labels) {
+    ctx.save();
+    ctx.translate(14, h / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.fillStyle = 'rgba(138, 154, 145, 0.35)';
+    ctx.font = '9px "JetBrains Mono", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('dBm', 0, 0);
+    ctx.restore();
+  }
+}
+
+function tToX(t, nowT, w, marginL = 40) {
+  const age = nowT - t;
+  return marginL + (1 - age / WINDOW_MS) * (w - marginL);
+}
+function dbToY(db, h) {
+  const r = (DB_MAX - db) / (DB_MAX - DB_MIN);
+  return r * h;
+}
+
+// ---- WIFI PANEL render ----
+const wifiCanvas = document.getElementById('wifi-canvas');
+const tooltip = document.getElementById('tooltip');
+let hoveredAp = null;
+let mouseX = -1, mouseY = -1;
+
+function renderWifi() {
+  const { ctx, w, h } = setupCanvas(wifiCanvas);
+  const nowT = performance.now() - NOW_START;
+
+  // background
+  ctx.fillStyle = '#0a0d0c';
+  ctx.fillRect(0, 0, w, h);
+  drawGrid(ctx, w, h, { labels: true });
+
+  // draw each AP as a polyline + dots
+  const marginL = 40;
+  apState.forEach(ap => {
+    const pts = ap.history.filter(p => nowT - p.t < WINDOW_MS);
+    if (pts.length < 1) return;
+
+    // line (smooth polyline)
+    ctx.strokeStyle = 'rgba(74, 222, 128, 0.35)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    pts.forEach((p, i) => {
+      const x = tToX(p.t, nowT, w, marginL);
+      const y = dbToY(p.dbm, h);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+
+    // event dots — bigger/glowier near the head
+    pts.forEach((p, i) => {
+      const x = tToX(p.t, nowT, w, marginL);
+      const y = dbToY(p.dbm, h);
+      const age = nowT - p.t;
+      const alpha = Math.max(0.2, 1 - age / WINDOW_MS);
+
+      // glow halo
+      if (i === pts.length - 1) {
+        ctx.fillStyle = `rgba(74, 222, 128, 0.2)`;
+        ctx.beginPath();
+        ctx.arc(x, y, 6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      ctx.fillStyle = `rgba(74, 222, 128, ${alpha})`;
+      ctx.beginPath();
+      ctx.arc(x, y, 2, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  });
+
+  // hover detection
+  hoveredAp = null;
+  let bestDist = 10;
+  if (mouseX > marginL) {
+    apState.forEach(ap => {
+      ap.history.forEach(p => {
+        const age = nowT - p.t;
+        if (age > WINDOW_MS) return;
+        const x = tToX(p.t, nowT, w, marginL);
+        const y = dbToY(p.dbm, h);
+        const dx = x - mouseX, dy = y - mouseY;
+        const d = Math.sqrt(dx * dx + dy * dy);
+        if (d < bestDist) { bestDist = d; hoveredAp = { ap, point: p, x, y }; }
+      });
+    });
+  }
+
+  // highlight hovered point
+  if (hoveredAp) {
+    ctx.strokeStyle = '#4ade80';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(hoveredAp.x, hoveredAp.y, 5, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([2, 3]);
+    ctx.strokeStyle = 'rgba(74, 222, 128, 0.3)';
+    ctx.beginPath();
+    ctx.moveTo(hoveredAp.x, 0);
+    ctx.lineTo(hoveredAp.x, h);
+    ctx.moveTo(marginL, hoveredAp.y);
+    ctx.lineTo(w, hoveredAp.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    renderTooltip(hoveredAp);
+  } else {
+    tooltip.classList.remove('visible');
+  }
+}
+
+function renderTooltip({ ap, point, x, y }) {
+  const hist = ap.history.slice(-12).reverse();
+  const ssidDisplay = ap.hidden ? '‹ hidden SSID ›' : ap.ssid;
+  tooltip.innerHTML = `
+    <div class="tt-header">
+      <div>
+        <div class="tt-ssid">${ssidDisplay}</div>
+        <div class="tt-bssid">${ap.bssid}</div>
+      </div>
+      <div class="tt-current">${point.dbm.toFixed(1)} dBm</div>
+    </div>
+    <div class="tt-meta">
+      <div class="k">Band</div><div class="v">${ap.band} GHz</div>
+      <div class="k">Samples</div><div class="v">${ap.history.length}</div>
+      <div class="k">T+</div><div class="v">${(point.t / 1000).toFixed(3)}s</div>
+    </div>
+    <div class="tt-history-label">Recent samples · Δ dBm</div>
+    <div class="tt-history">
+      ${hist.map(p => {
+        const cls = p.delta > 0.2 ? 'up' : p.delta < -0.2 ? 'down' : 'flat';
+        const sign = p.delta > 0 ? '+' : '';
+        const ts = new Date(SESSION_START + p.t).toISOString().substr(14, 9);
+        return `<div class="tt-row">
+          <span class="ts">${ts}</span>
+          <span class="dbm">${p.dbm.toFixed(1)}</span>
+          <span class="delta ${cls}">${sign}${p.delta.toFixed(2)}</span>
+        </div>`;
+      }).join('')}
+    </div>
+  `;
+  tooltip.classList.add('visible');
+  const rect = wifiCanvas.getBoundingClientRect();
+  const ttRect = tooltip.getBoundingClientRect();
+  let left = x + 14;
+  let top = y + 14;
+  if (left + ttRect.width > rect.width) left = x - ttRect.width - 14;
+  if (top + ttRect.height > rect.height) top = y - ttRect.height - 14;
+  tooltip.style.left = left + 'px';
+  tooltip.style.top = top + 'px';
+}
+
+// ---- MASTER SCORE render (band chart of all active instruments) ----
+const scoreCanvas = document.getElementById('score-canvas');
+function renderScore() {
+  const { ctx, w, h } = setupCanvas(scoreCanvas);
+  const nowT = performance.now() - NOW_START;
+
+  ctx.fillStyle = '#0a0d0c';
+  ctx.fillRect(0, 0, w, h);
+  drawGrid(ctx, w, h, { labels: true, yTicks: 4, xTicks: 10 });
+
+  // at this stage only WiFi is on — render its aggregate as a band
+  const marginL = 40;
+
+  // compose an envelope: at each time bucket, min and max of all APs
+  const buckets = 240;
+  const env = new Array(buckets).fill(null).map(() => ({ min: Infinity, max: -Infinity, count: 0 }));
+  apState.forEach(ap => {
+    ap.history.forEach(p => {
+      const age = nowT - p.t;
+      if (age > WINDOW_MS) return;
+      const idx = Math.floor((1 - age / WINDOW_MS) * (buckets - 1));
+      const b = env[idx];
+      if (p.dbm < b.min) b.min = p.dbm;
+      if (p.dbm > b.max) b.max = p.dbm;
+      b.count++;
+    });
+  });
+
+  // fill envelope band
+  const grad = ctx.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, 'rgba(74, 222, 128, 0.4)');
+  grad.addColorStop(1, 'rgba(74, 222, 128, 0.05)');
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  let started = false;
+  for (let i = 0; i < buckets; i++) {
+    const b = env[i];
+    if (b.count === 0) continue;
+    const x = marginL + (i / (buckets - 1)) * (w - marginL);
+    const yMax = dbToY(b.max, h);
+    if (!started) { ctx.moveTo(x, yMax); started = true; }
+    else ctx.lineTo(x, yMax);
+  }
+  for (let i = buckets - 1; i >= 0; i--) {
+    const b = env[i];
+    if (b.count === 0) continue;
+    const x = marginL + (i / (buckets - 1)) * (w - marginL);
+    const yMin = dbToY(b.min, h);
+    ctx.lineTo(x, yMin);
+  }
+  ctx.closePath();
+  ctx.fill();
+
+  // draw each AP as thin line
+  apState.forEach(ap => {
+    const pts = ap.history.filter(p => nowT - p.t < WINDOW_MS);
+    if (pts.length < 2) return;
+    ctx.strokeStyle = 'rgba(74, 222, 128, 0.5)';
+    ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    pts.forEach((p, i) => {
+      const x = tToX(p.t, nowT, w, marginL);
+      const y = dbToY(p.dbm, h);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+  });
+
+  // playhead line
+  ctx.strokeStyle = 'rgba(216, 228, 220, 0.6)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(w - 0.5, 0);
+  ctx.lineTo(w - 0.5, h);
+  ctx.stroke();
+
+  // instrument legend (chip)
+  ctx.font = '9px "JetBrains Mono", monospace';
+  ctx.textBaseline = 'top';
+  const legendItems = [
+    { label: 'WIFI · 42', color: '#4ade80', active: true },
+  ];
+  let lx = marginL + 8;
+  legendItems.forEach(it => {
+    ctx.fillStyle = it.color;
+    ctx.fillRect(lx, 8, 8, 2);
+    ctx.fillStyle = 'rgba(216, 228, 220, 0.8)';
+    ctx.fillText(it.label, lx + 12, 4);
+    lx += ctx.measureText(it.label).width + 30;
+  });
+}
+
+// ============================================================================
+// INSPECTOR list
+// ============================================================================
+const inspectList = document.getElementById('inspect-list');
+function renderInspector() {
+  const arr = [...apState.values()].sort((a, b) => b.current - a.current);
+  inspectList.innerHTML = arr.map(ap => {
+    const pct = Math.max(0, Math.min(100, ((ap.current + 95) / 70) * 100));
+    const ssid = ap.hidden ? '‹ hidden ›' : ap.ssid;
+    return `<div class="inspect-row">
+      <span class="ssid ${ap.hidden ? 'hidden' : ''}">${ssid}</span>
+      <span class="bar" style="--strength: ${pct}%"></span>
+      <span class="dbm">${Math.round(ap.current)}</span>
+    </div>`;
+  }).join('');
+}
+
+// ============================================================================
+// event loop
+// ============================================================================
+let totalEvents = 0;
+let lastTickAt = 0;
+function tick(now) {
+  if (now - lastTickAt > 500) {   // emit fake scan every 500ms for visual liveliness
+    emitScanTick();
+    lastTickAt = now;
+    renderInspector();
+
+    // update header stats
+    document.getElementById('ap-count').textContent = apState.size;
+    document.getElementById('eps').textContent = (apState.size / 0.5).toFixed(1);
+    const strongest = [...apState.values()].reduce((a, b) => a.current > b.current ? a : b);
+    document.getElementById('strongest').textContent = `${Math.round(strongest.current)} dBm`;
+    document.getElementById('total-events').textContent = totalEvents.toLocaleString();
+  }
+  renderWifi();
+  renderScore();
+  updateClocks();
+  requestAnimationFrame(tick);
+}
+
+function updateClocks() {
+  const d = new Date();
+  const hh = String(d.getUTCHours()).padStart(2,'0');
+  const mm = String(d.getUTCMinutes()).padStart(2,'0');
+  const ss = String(d.getUTCSeconds()).padStart(2,'0');
+  const ms = String(d.getUTCMilliseconds()).padStart(3,'0');
+  document.getElementById('utc-clock').textContent = `${hh}:${mm}:${ss}.${ms}Z`;
+
+  const sess = Math.floor((Date.now() - SESSION_START) / 1000);
+  const sh = String(Math.floor(sess/3600)).padStart(2,'0');
+  const sm = String(Math.floor(sess/60)%60).padStart(2,'0');
+  const sss = String(sess%60).padStart(2,'0');
+  document.getElementById('session-time').textContent = `${sh}:${sm}:${sss}`;
+}
+
+// mouse handling
+wifiCanvas.addEventListener('mousemove', e => {
+  const r = wifiCanvas.getBoundingClientRect();
+  mouseX = e.clientX - r.left;
+  mouseY = e.clientY - r.top;
+});
+wifiCanvas.addEventListener('mouseleave', () => { mouseX = -1; mouseY = -1; });
+
+// instrument toggle
+document.querySelectorAll('.instrument').forEach(el => {
+  el.addEventListener('click', () => el.classList.toggle('on'));
+});
+
+// start
+for (let i = 0; i < 40; i++) emitScanTick(); // seed history
+renderInspector();
+requestAnimationFrame(tick);
+</script>
+
+</body>
+</html>
