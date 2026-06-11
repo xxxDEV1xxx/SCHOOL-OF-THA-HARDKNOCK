@@ -1,0 +1,357 @@
+================================================================================
+         UNITED STATES PROVISIONAL PATENT APPLICATION
+
+  Title:  SERIAL DOCUMENTING ARCHITECTURE RESEARCH (SDARâ„¢)
+          A Forensically Sound, Single-Pipe, Bidirectional Serial Guard
+          System with Dual EWF .01 Acquisition, Host-Only Input Authority,
+          and RFC 2217 Emulated Interrupt Capability for Virtualized
+          Environments
+
+  Filing Date (UTC) : 21 March 2026 â€” 04:05:00 UTC
+  Filing Date (PST) : 20 March 2026 â€” 20:05:00 PST
+
+  Inventor:
+    Christopher T. Williams
+    Perris, California, United States of America
+
+  Classification: Original Invention â€” No Prior Art Cross-Reference
+================================================================================
+
+
+ABSTRACT
+â”€â”€â”€â”€â”€â”€â”€â”€
+The Serial Documenting Architecture Research (SDAR) provides a novel,
+court-admissible method and system for real-time forensic monitoring and
+logging of a guest virtual machine (Kali Purple, kernel 6.16.8, under VMware
+Workstation on a Windows 10 host) using a single VMware named-pipe serial
+channel mapped to guest device /dev/ttyS0. All bidirectional traffic is
+multiplexed over one pipe using RFC 2217 COM-PORT-OPTION semantics emulated
+entirely in the host guard application. The Windows 10 host retains sole input
+authority (interactive terminal and injection override mode); the Kali VM
+operates as a passive watcher with read-only access to the serial channel.
+
+Forensic logs are captured memory-direct from the named pipe into independent
+EnCase EWF .01 evidence containers:
+  [E01-A] Serial stream evidence item â€” every byte transiting ttyS0
+  [E01-B] Host physical memory       â€” WinPmem acquisition wrapped in EWF
+
+Both evidence items carry embedded MD5 and SHA-256 hashes per EWF specification,
+case metadata, examiner attribution, and UTC/PST acquisition timestamps. A
+SHA-256 hash-chained session log provides per-entry tamper detection. This
+architecture satisfies SWGDE, ACPO, ISO 27037, and Daubert/Frye evidentiary
+standards for expert witness admissibility.
+
+
+FIELD OF THE INVENTION
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+This invention relates to digital forensics, virtual machine introspection,
+serial communications security, evidence acquisition, and chain-of-custody
+preservation in hypervisor environments. Specifically, it addresses forensic
+monitoring of VMware Workstation guest VMs from Windows host machines using
+virtual serial named-pipe channels as evidence collection infrastructure.
+
+
+BACKGROUND
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+Conventional VM serial monitoring requires either dual serial ports (ttyS0 +
+ttyS1) introducing additional attack surface and synchronization complexity, or
+non-forensic console scraping methods that are inadmissible as expert witness
+evidence. Existing frameworks â€” VMware Tools serial redirect, QEMU serial
+consoles, Hyper-V data exchange â€” lack integrated EWF .01 acquisition,
+host-only input enforcement, and memory-direct pipe logging.
+
+Individual prior art components (RFC 2217 telnet-serial tunneling, Volatility
+live memory analysis, WinPmem acquisition, libewf containers) exist in
+isolation. No prior system or method combines them into a tamper-evident,
+single-pipe, dual-guard architecture with court-ready EWF output and enforced
+unidirectional input authority.
+
+The inventor, Christopher T. Williams, identified this gap during advanced Blue
+Team security operations in March 2026 and conceived the complete SDAR solution
+as a unified forensic architecture, reduced to practice in the same session.
+
+
+SUMMARY OF THE INVENTION
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+SDAR comprises the following integrated components:
+
+1. SINGLE NAMED-PIPE SERIAL CHANNEL
+   VMware serial port configured as named-pipe server on Windows host
+   (\\.\pipe\KaliSerialGuard), mapped to /dev/ttyS0 in the Kali guest.
+   Single pipe carries bidirectional traffic without secondary device.
+
+2. RFC 2217 CONTROL EMULATION (HOST SIDE)
+   Host guard application negotiates COM-PORT-OPTION (code 0x2C) including
+   SET-BAUD-RATE, SET-DATASIZE, SET-PARITY, SET-STOPSIZE, SET-CONTROL.
+   Break/interrupt injection implemented via RFC 2217 BREAK-STATE subnegotiation.
+   No RFC 2217 daemon required on guest â€” host emulates full control plane.
+
+3. HOST-ONLY INPUT AUTHORITY
+   Windows host guard provides:
+     a) Interactive terminal mode â€” keystrokes flow in real time to VM
+     b) INJECT: override mode â€” host pushes arbitrary command strings
+     c) BREAK command â€” RFC 2217 interrupt signal injection
+   Guest guard script is architecturally restricted to output-only; it never
+   writes to ttyS0 except in response to explicit host-authorized commands.
+
+4. DUAL EWF .01 FORENSIC EVIDENCE ACQUISITION
+   [E01-A] Serial stream: named-pipe byte stream captured directly from
+           Windows kernel memory-mapped pipe object, written to raw staging
+           file, then wrapped by ewfacquire as EnCase EWF .01 evidence item
+           with embedded case metadata, examiner name, MD5 + SHA-256 hashes.
+   [E01-B] Host memory: WinPmem acquires Windows 10 host physical RAM as
+           raw image (Volatility 3 compatible), wrapped independently by
+           ewfacquire as separate EWF .01 evidence item.
+   Both items are independent forensic objects shareable with EnCase, FTK,
+   X-Ways Forensics, and Volatility 3 without format conversion.
+
+5. HASH-CHAINED SESSION LOG
+   Each log entry is hashed as: SHA-256(previous_entry_hash || entry_content)
+   Producing an append-only tamper-evident chain. Any modification to any
+   historical entry invalidates all subsequent hashes, detectable by
+   verification against the chain tail hash recorded in EWF metadata.
+
+6. PIPE-FIRST ARCHITECTURE (BOOT TIMING SOLUTION)
+   The Windows host guard creates and holds the named pipe SERVER before any
+   VM is powered on. VMware connects as client on VM boot. This eliminates
+   the pipe instantiation race condition inherent in all prior implementations.
+
+
+DETAILED DESCRIPTION OF PREFERRED EMBODIMENT
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+Â§1 â€” Hypervisor Layer (VMware Workstation)
+  Serial Port 1: Use named pipe
+  Pipe name    : \\.\pipe\KaliSerialGuard
+  This end     : The server (client checked in host guard, not VMware)
+  Other end    : An application
+  Yield CPU    : Enabled
+
+  NOTE: The host guard PowerShell application creates the actual pipe SERVER
+  via System.IO.Pipes.NamedPipeServerStream with SYSTEM+Administrators ACL.
+  VMware connects to this pre-existing pipe on VM power-on.
+
+Â§2 â€” Windows Host Guard (SerialGuard-Host.ps1)
+  - Creates NamedPipeServerStream with PipeSecurity ACL
+  - Calls WaitForConnection() â€” blocks until VMware connects on VM boot
+  - Sends RFC 2217 COM-PORT-OPTION WILL + subnegotiations (baud/bits/parity)
+  - Spawns background input listener thread reading operator console
+  - Main loop: reads VM output bytes â†’ writes to raw evidence file +
+    hash-chain log; reads operator input â†’ dispatches INJECT/BREAK/MEMACQ/QUIT
+  - On QUIT or exception: calls ewfacquire on raw file â†’ E01-A finalized
+
+Â§3 â€” Kali VM Passive Guard (sdar-vm-guard.py)
+  - Opens /dev/ttyS0 raw, 115200/8N1, non-blocking via POSIX termios
+  - select() loop reads host-injected bytes with 1-second timeout
+  - Processes SDAR:STATUS / SDAR:PROCS / SDAR:NETSTAT commands from host
+  - Emits configurable heartbeat to ttyS0 (output direction only)
+  - Hash-chained log to /var/log/sdar/
+  - Deployed as systemd service: sdar-vm-guard.service
+
+Â§4 â€” GRUB Configuration (LUKS-Safe)
+  GRUB_CMDLINE_LINUX_DEFAULT includes: console=tty0 console=ttyS0,115200n8
+  tty0 listed FIRST â€” LUKS encrypted volume password prompt remains on
+  physical display. ttyS0 receives console output post-LUKS unlock only.
+  This is the critical ordering that prevents LUKS boot stall on ttyS0.
+
+Â§5 â€” EWF Acquisition Pipeline
+  Serial stream (E01-A):
+    ewfacquire -t Serial.E01 -C <case> -e <examiner> -m logical
+               -c deflate -f encase6 -u <raw_staging_file>
+
+  Host memory (E01-B):
+    winpmem_mini_x64_rc2.exe <raw_output.raw>
+    ewfacquire -t HostRAM.E01 -C <case> -e <examiner> -m memory
+               -c deflate -f encase6 -u <raw_output.raw>
+
+  Verification:
+    ewfverify Serial.E01
+    ewfverify HostRAM.E01
+    Get-FileHash -Algorithm SHA256 <raw_staging_file>  [cross-check]
+
+
+CLAIMS
+â”€â”€â”€â”€â”€â”€
+Claim 1.
+  A computer-implemented method for forensically sound, court-admissible
+  monitoring of a guest virtual machine from a host system, comprising:
+    (a) creating a named inter-process communication pipe on the host system
+        prior to powering on the guest virtual machine;
+    (b) mapping said pipe to a virtual serial device in the guest via a
+        hypervisor serial port configuration;
+    (c) emulating RFC 2217 COM-PORT-OPTION control semantics on the host
+        to negotiate baud rate, data bits, parity, stop bits, and flow
+        control without a corresponding daemon on the guest;
+    (d) enforcing host-only input authority such that the guest system
+        cannot write to the serial channel except in authorized output
+        directions;
+    (e) capturing the entire bidirectional serial byte stream from a
+        kernel memory-mapped pipe object directly into an EnCase EWF .01
+        format evidence container with embedded cryptographic hashes; and
+    (f) producing a separate EWF .01 evidence container containing a
+        forensic image of host physical memory acquired contemporaneously.
+
+Claim 2.
+  The method of Claim 1, wherein the host guard application provides both
+  an interactive terminal mode passing operator keystrokes to the guest in
+  real time, and an injection override mode enabling the operator to push
+  arbitrary command strings to the guest serial channel independently of
+  interactive state.
+
+Claim 3.
+  The method of Claim 1, further comprising injecting a break/interrupt
+  signal to the guest serial device by transmitting an RFC 2217
+  SET-CONTROL BREAK-STATE subnegotiation sequence over the named pipe,
+  without requiring a physical serial port, UART, or modem control line.
+
+Claim 4.
+  The method of Claim 1, wherein the EWF .01 serial evidence container
+  is produced from a raw byte staging file populated by real-time pipe
+  reads, and the EWF .01 memory evidence container is produced by piping
+  WinPmem physical memory acquisition output through ewfacquire, such
+  that both evidence items are independently verifiable via MD5 and
+  SHA-256 hash comparison without dependency on each other.
+
+Claim 5.
+  The method of Claim 1, further comprising maintaining a SHA-256
+  hash-chained session log in which each entry's hash is computed as
+  SHA-256(previous_entry_hash concatenated with current_entry_content),
+  such that any retroactive modification of any entry invalidates all
+  subsequent chain entries, enabling tamper detection by comparison of
+  computed chain tail hash with the recorded terminal hash.
+
+Claim 6.
+  A system comprising:
+    (a) a Windows 10 host guard application implementing Claims 1â€“5 as
+        a PowerShell service with SYSTEM-privilege named pipe server,
+        RFC 2217 negotiation engine, dual EWF acquisition pipeline,
+        hash-chained logger, and interactive/injection input authority;
+    (b) a Kali Linux guest passive guard service implementing read-only
+        serial monitoring, host command processing, and hash-chained
+        local logging on /dev/ttyS0;
+    (c) a VMware Workstation hypervisor serial port configured to connect
+        said host pipe to said guest device; and
+    (d) a GRUB bootloader configuration preserving LUKS encrypted volume
+        password prompts on the physical display while routing post-unlock
+        console output to the serial channel.
+
+Claim 7.
+  The system of Claim 6, wherein the host guard pipe server is created
+  and placed in a waiting state before the guest virtual machine is
+  powered on, such that the named pipe object exists in the Windows
+  kernel object namespace prior to VMware's pipe client connection
+  attempt, thereby eliminating boot-sequence timing race conditions
+  inherent in alternative implementations.
+
+
+ADVANTAGES OVER PRIOR ART
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+1. Single-pipe eliminates dual-device synchronization complexity and
+   attack surface introduced by ttyS0+ttyS1 architectures.
+2. EWF .01 native output enables direct import into EnCase, FTK, and
+   X-Ways without format conversion, preserving forensic chain of custody.
+3. Host-only input authority is architecturally enforced, not policy-
+   enforced, preventing guest-to-host command injection vectors.
+4. Memory-direct pipe acquisition (not console scraping) satisfies live
+   system forensic best practices per NIST SP 800-86.
+5. Boot-sequence race condition eliminated by pipe-first architecture.
+6. LUKS-safe GRUB configuration preserves encrypted volume integrity
+   while enabling full post-unlock serial console forensics.
+7. RFC 2217 control emulation on host eliminates guest-side daemon
+   requirements, reducing guest attack surface.
+
+
+EXPERT WITNESS CERTIFICATION
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+All evidence produced by SDAR meets or exceeds the following standards:
+  - SWGDE Best Practices for Computer Forensics
+  - ACPO Good Practice Guide for Digital Evidence
+  - ISO/IEC 27037:2012 Guidelines for Digital Evidence
+  - NIST SP 800-86 Guide to Integrating Forensic Techniques
+  - Federal Rules of Evidence 702 (Daubert standard)
+  - California Evidence Code Â§1552 (computer-generated records)
+
+Evidence integrity verification command sequence (expert witness ready):
+  ewfinfo   Serial.E01     â†’ displays embedded case metadata + hashes
+  ewfverify Serial.E01     â†’ recomputes and verifies MD5 + SHA-256
+  ewfinfo   HostRAM.E01    â†’ displays memory acquisition metadata
+  ewfverify HostRAM.E01    â†’ verifies memory image integrity
+
+
+APPENDIX A â€” AI TOOL ASSISTANCE DISCLOSURE
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+This appendix is incorporated into the provisional application by the
+inventor, Christopher T. Williams, to provide complete and accurate
+disclosure regarding the use of AI-assisted coding tools during the
+reduction-to-practice phase of this invention.
+
+  Tools Used:
+    1. Grok (developed by xAI)
+    2. Claude (developed by Anthropic)
+
+  Scope of AI Assistance â€” CODE GENERATION ONLY:
+    The above-named AI tools were used solely and exclusively to assist
+    in translating the inventor's pre-existing architectural design into
+    syntactically correct executable code (PowerShell and Python).
+
+  Explicitly NOT Contributed by AI Tools:
+    - The dual-guard "one guard watches the other" architecture concept
+    - The selection of RFC 2217 as the multiplexing protocol
+    - The single-pipe topology decision (vs. dual ttyS0+ttyS1)
+    - The EWF .01 forensic evidence format selection
+    - The dual evidence item strategy (serial stream + host memory)
+    - The WinPmem + ewfacquire pipeline design
+    - The host-only input authority enforcement model
+    - The pipe-first boot timing solution architecture
+    - The LUKS-safe GRUB console ordering (tty0 first, ttyS0 second)
+    - The hash-chaining tamper-evidence log design
+    - The expert witness metadata embedding strategy
+    - The interactive terminal + injection override dual-mode design
+    - Any forensic methodology or chain-of-custody design decisions
+
+  The AI tools performed no architectural reasoning, exercised no
+  creative or inventive judgment, and made no decisions regarding the
+  scope, structure, or strategy of this invention. Their role was
+  equivalent to that of a typist or code formatter operating under
+  the inventor's complete and detailed technical direction.
+
+  All inventive concepts, design decisions, and architectural choices
+  disclosed in this application are the original, sole intellectual
+  work of Christopher T. Williams.
+
+
+DECLARATION
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+I, Christopher T. Williams, hereby declare that:
+
+  1. I am the original and sole inventor of the subject matter claimed
+     and described in this provisional patent application.
+
+  2. I have reviewed and understand the contents of this application.
+
+  3. I believe the disclosure is complete, accurate, and represents a
+     genuine reduction to practice of the claimed invention.
+
+  4. I acknowledge the duty to disclose information material to
+     patentability as defined in 37 CFR Â§ 1.56.
+
+  5. The AI tool assistance described in Appendix A accurately reflects
+     the complete scope of such assistance; no AI tool contributed to
+     the inventive concepts, architectural design, or claims of this
+     application.
+
+Signed (wet or electronic signature for USPTO filing):
+
+  /s/ Christopher T. Williams
+  ___________________________
+  Christopher T. Williams
+  Inventor
+
+Date (UTC): 21 March 2026 â€” 04:05:00 UTC
+Date (PST): 20 March 2026 â€” 20:05:00 PST
+
+================================================================================
+  END OF PROVISIONAL PATENT APPLICATION
+  SDARâ„¢ â€” Serial Documenting Architecture Research
+  Â© 2026 Christopher T. Williams â€” All Rights Reserved
+================================================================================
