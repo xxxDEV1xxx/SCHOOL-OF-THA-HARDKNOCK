@@ -1,0 +1,344 @@
+import os
+import glob
+import math
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.widgets import Button
+
+# ---------- LOAD LATEST POINTS.CSV -----------------------------------
+
+BASE_DIR = r"C:\gnss\forensic_output"
+pattern = os.path.join(BASE_DIR, "GNSS_AttackCase_*")
+folders = glob.glob(pattern)
+if not folders:
+    raise FileNotFoundError("No GNSS_AttackCase_* folders found in forensic_output")
+
+latest_folder = max(folders, key=os.path.getmtime)
+CSV_PATH = os.path.join(latest_folder, "points.csv")
+print("Loading:", CSV_PATH)
+
+df = pd.read_csv(CSV_PATH)
+
+# Ensure UtcTime is parsed as datetime if present
+if "UtcTime" in df.columns:
+    df["UtcTime"] = pd.to_datetime(df["UtcTime"], errors="coerce")
+
+# Compute "departure time" as the next point's UtcTime (simple model)
+df["DepartureTime"] = df["UtcTime"].shift(-1)
+
+lats = df["Latitude"].values
+lons = df["Longitude"].values
+
+# ---------- FIGURE SETUP ---------------------------------------------
+
+POINT_SIZE = 8
+POINT_ALPHA = 0.9
+BACKGROUND_ALPHA = 0.25
+
+fig, ax = plt.subplots(figsize=(10, 6))
+plt.subplots_adjust(left=0.08, right=0.98, top=0.95, bottom=0.12)
+
+ax.set_facecolor((0.9, 0.9, 0.9, BACKGROUND_ALPHA))
+sc = ax.scatter(lons, lats, s=POINT_SIZE, c="red", alpha=POINT_ALPHA)
+
+ax.set_xlabel("Longitude (degrees)")
+ax.set_ylabel("Latitude (degrees)")
+ax.set_title("GNSS Points with CellMapper Data (Lat/Lon Grid)")
+
+ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.5)
+ax.set_aspect("equal", adjustable="box")
+
+# Initial limits with padding
+if len(lons) > 1:
+    pad_lon = (max(lons) - min(lons)) * 0.05
+    pad_lat = (max(lats) - min(lats)) * 0.05
+else:
+    pad_lon = pad_lat = 0.01
+
+ax.set_xlim(min(lons) - pad_lon, max(lons) + pad_lon)
+ax.set_ylim(min(lats) - pad_lat, max(lats) + pad_lat)
+
+# ---------- SCALE BAR / MILES PER INCH --------------------------------
+
+def haversine_miles(lat1, lon1, lat2, lon2):
+    R = 6371000.0  # meters
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+
+    a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlambda/2)**2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    meters = R * c
+    return meters * 0.000621371  # meters -> miles
+
+scalebar_line = None
+scalebar_text = None
+
+def update_scalebar():
+    global scalebar_line, scalebar_text
+
+    if scalebar_line is not None:
+        scalebar_line.remove()
+        scalebar_line = None
+    if scalebar_text is not None:
+        scalebar_text.remove()
+        scalebar_text = None
+
+    x0, x1 = ax.get_xlim()
+    y0, y1 = ax.get_ylim()
+    center_lat = (y0 + y1) / 2.0
+
+    # Horizontal span in miles
+    span_miles = haversine_miles(center_lat, x0, center_lat, x1)
+    if span_miles <= 0:
+        fig.canvas.draw_idle()
+        return
+
+    # We want a bar that is about 1/5 of the width
+    bar_miles = span_miles / 5.0
+
+    # Convert bar_miles to degrees of longitude at center latitude
+    miles_per_deg_lon = 69.172 * math.cos(math.radians(center_lat))
+    if miles_per_deg_lon <= 0:
+        fig.canvas.draw_idle()
+        return
+
+    deg_lon_for_bar = bar_miles / miles_per_deg_lon
+
+    bar_y = y0 + (y1 - y0) * 0.05
+    center_lon = (x0 + x1) / 2.0
+    bar_x0 = center_lon - deg_lon_for_bar / 2.0
+    bar_x1 = center_lon + deg_lon_for_bar / 2.0
+
+    scalebar_line = ax.plot(
+        [bar_x0, bar_x1],
+        [bar_y, bar_y],
+        color="black",
+        linewidth=2
+    )[0]
+
+    scalebar_text = ax.text(
+        center_lon,
+        bar_y + (y1 - y0) * 0.02,
+        f"{bar_miles:.2f} mi",
+        ha="center",
+        va="bottom",
+        fontsize=9,
+        color="black",
+        bbox=dict(facecolor="white", alpha=0.7, edgecolor="none", pad=1)
+    )
+
+    fig.canvas.draw_idle()
+
+update_scalebar()
+
+# ---------- HOVER TOOLTIP --------------------------------------------
+
+annot = ax.annotate(
+    "",
+    xy=(0, 0),
+    xytext=(15, 15),
+    textcoords="offset points",
+    bbox=dict(boxstyle="round", fc="w", alpha=0.9),
+    arrowprops=dict(arrowstyle="->")
+)
+annot.set_visible(False)
+
+def format_point_info(idx):
+    row = df.iloc[idx]
+
+    lat = row.get("Latitude", None)
+    lon = row.get("Longitude", None)
+    toa = row.get("UtcTime", None)
+    tod = row.get("DepartureTime", None)
+
+    cell_lat = row.get("Cell_Lat", None)
+    cell_lon = row.get("Cell_Lon", None)
+    mcc = row.get("Cell_MCC", None)
+    mnc = row.get("Cell_MNC", None)
+    tac = row.get("Cell_TAC", None)
+    eci = row.get("Cell_ECI", None)
+    rsrp = row.get("Cell_RSRP", None)
+    rat1 = row.get("Cell_RAT1", None)
+    rat2 = row.get("Cell_RAT2", None)
+    pci = row.get("Cell_PCI", None)
+    earfcn = row.get("Cell_EARFCN", None)
+    cell_dist = row.get("Cell_DistMeters", None)
+
+    provider = row.get("Provider", "")
+    pclass = row.get("ProviderClass", "")
+    line = row.get("LineNumber", "")
+    alt = row.get("AltitudeMeters", "")
+    acc = row.get("AccuracyMeters", "")
+    dist_m = row.get("DistToTruth_m", "")
+    dist_ft = row.get("DistToTruth_ft", "")
+    used = row.get("UsedSignals", "")
+
+    toa_str = toa.strftime("%Y-%m-%d %H:%M:%S UTC") if pd.notnull(toa) else "N/A"
+    tod_str = tod.strftime("%Y-%m-%d %H:%M:%S UTC") if pd.notnull(tod) else "N/A"
+
+    lines = []
+    lines.append(f"Line: {line}")
+    lines.append(f"Provider: {provider} ({pclass})")
+    lines.append(f"Latitude: {lat:.8f}")
+    lines.append(f"Longitude: {lon:.8f}")
+    lines.append(f"Time of arrival: {toa_str}")
+    lines.append(f"Time of departure: {tod_str}")
+    lines.append("")
+    lines.append("Cell tower (CellMapper):")
+    lines.append(f"  Lat/Lon: {cell_lat}, {cell_lon}")
+    lines.append(f"  MCC/MNC: {mcc}/{mnc}")
+    lines.append(f"  TAC: {tac}  ECI: {eci}")
+    lines.append(f"  RSRP: {rsrp} dBm")
+    lines.append(f"  RAT1/RAT2: {rat1}/{rat2}")
+    lines.append(f"  PCI: {pci}  EARFCN: {earfcn}")
+    lines.append(f"  Dist to tower: {cell_dist} m")
+    lines.append("")
+    lines.append("GNSS details:")
+    lines.append(f"  Altitude: {alt} m")
+    lines.append(f"  Accuracy: {acc} m")
+    lines.append(f"  Used signals: {used}")
+    lines.append(f"  Dist to truth: {dist_m} m / {dist_ft} ft")
+
+    return "\n".join(lines)
+
+def update_annot(ind):
+    idx = ind["ind"][0]
+    x, y = lons[idx], lats[idx]
+    annot.xy = (x, y)
+    text = format_point_info(idx)
+    annot.set_text(text)
+
+def hover(event):
+    if event.inaxes != ax:
+        annot.set_visible(False)
+        fig.canvas.draw_idle()
+        return
+
+    cont, ind = sc.contains(event)
+    if cont:
+        update_annot(ind)
+        annot.set_visible(True)
+        fig.canvas.draw_idle()
+    else:
+        if annot.get_visible():
+            annot.set_visible(False)
+            fig.canvas.draw_idle()
+
+fig.canvas.mpl_connect("motion_notify_event", hover)
+
+# ---------- ZOOM BUTTONS (+ / -) -------------------------------------
+
+# We interpret "1 inch = X miles" and change X by 0.1 miles per click.
+# Practically, we adjust the horizontal span in miles accordingly.
+
+def get_current_miles_per_inch():
+    x0, x1 = ax.get_xlim()
+    y0, y1 = ax.get_ylim()
+    center_lat = (y0 + y1) / 2.0
+    span_miles = haversine_miles(center_lat, x0, center_lat, x1)
+    fig_width_in = fig.get_size_inches()[0]
+    if fig_width_in <= 0:
+        return None, None
+    miles_per_inch = span_miles / fig_width_in
+    return miles_per_inch, span_miles
+
+def set_miles_per_inch(target_mpi):
+    # Keep center fixed, adjust xlim to achieve target miles per inch
+    x0, x1 = ax.get_xlim()
+    y0, y1 = ax.get_ylim()
+    center_lat = (y0 + y1) / 2.0
+    center_lon = (x0 + x1) / 2.0
+
+    fig_width_in = fig.get_size_inches()[0]
+    if fig_width_in <= 0:
+        return
+
+    target_span_miles = target_mpi * fig_width_in
+
+    # Convert miles span to degrees of longitude
+    miles_per_deg_lon = 69.172 * math.cos(math.radians(center_lat))
+    if miles_per_deg_lon <= 0:
+        return
+
+    span_deg_lon = target_span_miles / miles_per_deg_lon
+    new_x0 = center_lon - span_deg_lon / 2.0
+    new_x1 = center_lon + span_deg_lon / 2.0
+
+    # Keep same aspect ratio for y
+    x_span_old = x1 - x0
+    y_span_old = y1 - y0
+    if x_span_old <= 0:
+        return
+    ratio = y_span_old / x_span_old
+    new_y_span = span_deg_lon * ratio
+    center_lat = (y0 + y1) / 2.0
+    new_y0 = center_lat - new_y_span / 2.0
+    new_y1 = center_lat + new_y_span / 2.0
+
+    ax.set_xlim(new_x0, new_x1)
+    ax.set_ylim(new_y0, new_y1)
+    update_scalebar()
+    fig.canvas.draw_idle()
+
+def zoom_change(delta_miles_per_inch):
+    mpi, _ = get_current_miles_per_inch()
+    if mpi is None:
+        return
+    new_mpi = max(0.01, mpi + delta_miles_per_inch)  # avoid zero/negative
+    set_miles_per_inch(new_mpi)
+
+# Buttons in lower-left
+ax_zoom_in = plt.axes([0.08, 0.02, 0.04, 0.05])
+ax_zoom_out = plt.axes([0.13, 0.02, 0.04, 0.05])
+
+btn_zoom_in = Button(ax_zoom_in, '+')
+btn_zoom_out = Button(ax_zoom_out, '-')
+
+def on_zoom_in(event):
+    # Decrease miles per inch by 0.1 -> zoom in
+    zoom_change(-0.1)
+
+def on_zoom_out(event):
+    # Increase miles per inch by 0.1 -> zoom out
+    zoom_change(0.1)
+
+btn_zoom_in.on_clicked(on_zoom_in)
+btn_zoom_out.on_clicked(on_zoom_out)
+# ---------- WINDOW TRANSPARENCY CONTROL (+ / -) -------------------------
+
+import matplotlib
+
+# Current transparency (1.0 = opaque)
+window_alpha = 1.0
+
+def set_window_alpha(alpha):
+    global window_alpha
+    window_alpha = max(0.20, min(1.00, alpha))  # clamp between 0.20 and 1.00
+
+    # Windows backend
+    try:
+        fig.canvas.manager.window.wm_attributes('-alpha', window_alpha)
+    except:
+        pass  # If backend doesn't support transparency
+
+    fig.canvas.draw_idle()
+
+def on_alpha_increase(event):
+    set_window_alpha(window_alpha + 0.05)
+
+def on_alpha_decrease(event):
+    set_window_alpha(window_alpha - 0.05)
+
+# Buttons for transparency
+ax_alpha_in = plt.axes([0.20, 0.02, 0.04, 0.05])
+ax_alpha_out = plt.axes([0.25, 0.02, 0.04, 0.05])
+
+btn_alpha_in = Button(ax_alpha_in, 'T+')
+btn_alpha_out = Button(ax_alpha_out, 'T-')
+
+btn_alpha_in.on_clicked(on_alpha_increase)
+btn_alpha_out.on_clicked(on_alpha_decrease)
+
+plt.show()
