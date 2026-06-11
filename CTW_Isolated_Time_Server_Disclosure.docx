@@ -1,0 +1,95 @@
+INVENTION DISCLOSURE
+Isolated Stratum-0 Time and Location Server
+One-Way Ethernet Distribution via Atomic Clock + GLONASS
+Inventor: Christopher T. Williams  ·  Perris, CA  ·  April 2026
+Inventor	Christopher T. Williams
+Related Patent	USPTO 19/466,387 (Cryptographic Replacement MAC Architecture)
+Disclosure Date	April 23, 2026
+Classification	Hardware Security / Network Timing Infrastructure
+
+1. Title of Invention
+Isolated Stratum-0 Time and Location Server with One-Way Ethernet Distribution
+
+2. Field of Invention
+This invention relates to precision timekeeping hardware, GNSS-disciplined atomic clock architectures, and secure local network time distribution. Specifically, it describes a self-contained appliance that derives Stratum-0 time from an onboard atomic oscillator disciplined by GLONASS satellite signals and distributes that time to a local network over a unidirectional (transmit-only) Ethernet interface, eliminating all inbound data paths to the clock subsystem.
+
+3. Background and Problem Statement
+Contemporary network time infrastructure relies on NTP/NTPsec servers that synchronize to upstream Stratum-1 or Stratum-2 sources reachable over the public Internet. This creates multiple attack surfaces:
+NTP amplification and reflection attacks via UDP/123
+Upstream server compromise propagating false time to all downstream clients
+BGP hijacking and DNS manipulation redirecting NTP queries to adversarial servers
+GNSS spoofing and jamming attacks corrupting time at the satellite-reception layer
+Man-in-the-middle injection into NTP response packets
+
+GNSS spoofing has become operationally documented at scale. GPS Band L1 (1575.42 MHz) and GLONASS L1 signals have been subjected to coordinated spoofing campaigns, particularly in conflict zones and near sensitive infrastructure. A receiver that accepts satellite data and also exposes a bidirectional network interface presents a compounded attack surface: an adversary may corrupt the time source at the RF layer AND at the network layer simultaneously.
+Existing GPS-disciplined NTP appliances (e.g., Meinberg LANTIME, EndRun Technologies Meridian) remain bidirectionally networked, exposing management interfaces, SSH, SNMP, and NTP query ports. No current commercial solution enforces physical one-way data flow at the Ethernet hardware layer while simultaneously maintaining atomic-clock holdover independent of GNSS availability.
+
+4. Summary of the Invention
+The invention is a standalone hardware appliance (hereinafter the CTW Time Server or CTS) consisting of:
+An onboard atomic oscillator (cesium beam, rubidium OCXO, or hydrogen maser) providing holdover accuracy independent of GNSS
+A GLONASS-only receiver used exclusively to discipline the atomic oscillator; the receiver provides no data output path to any networked subsystem
+A unidirectional Ethernet transmit circuit: the device physically lacks receive capability on its network interface at the hardware layer (or implements an optical data diode), ensuring no inbound Ethernet frames can reach the clock subsystem
+An NTPsec-derived or stripped time-broadcast daemon that emits RFC 5905 NTP packets onto the local network segment without any query-response protocol stack, functioning analogously to a local DNS resolver but for time
+Optional: a PPS (pulse-per-second) output pin and IRIG-B output for direct hardware time distribution to co-located equipment
+
+5. Detailed Description
+5.1 Atomic Oscillator Subsystem
+The primary frequency reference is an atomic oscillator mounted on the appliance mainboard. Rubidium OCXOs provide Allan deviation of approximately 10⁻¹¹ at 1 second, sufficient for sub-microsecond holdover over hours. Cesium beam standards extend holdover to days. The oscillator output is a 10 MHz reference signal fed directly to the GLONASS disciplining circuit and the time-distribution processor.
+
+5.2 GLONASS Receiver and RF Isolation
+A GLONASS L1/L2 receiver (e.g., u-blox M9 or equivalent) disciplines the atomic oscillator via a phase-locked loop comparing the oscillator output against the GLONASS-derived PPS signal. Critically, the receiver operates in a receive-only mode enforced at the hardware level:
+The receiver module's UART/SPI data output is connected only to the disciplining circuit; it has no path to the Ethernet subsystem
+The receiver does not accept configuration over any network-exposed interface
+RF input is a passive antenna; no transmit capability exists at the RF layer
+GLONASS is selected over GPS as the primary constellation due to its independent orbital and ground-control infrastructure, providing resilience against GPS-specific jamming campaigns. The receiver may optionally accept BeiDou or Galileo as secondary discipline sources, all under the same isolation constraints.
+In the event of confirmed GNSS jamming or spoofing (detected by signal anomaly monitoring — e.g., C/N₀ collapse, pseudorange jump, or simultaneous multi-constellation failure), the receiver is electronically isolated and the atomic oscillator enters holdover mode. Time accuracy degrades at the oscillator’s free-running drift rate, not at the attacker’s injected rate.
+
+5.3 Unidirectional Ethernet Interface
+The defining security property of the CTS is the physical enforcement of one-way data flow on the network interface. This is achieved by one of two methods:
+Hardware data diode: an optical fiber transmit-only coupler with no receive optical path, adapted to 100BASE-FX or 1000BASE-SX Ethernet
+Transmit-only NIC: a modified or purpose-built Ethernet controller with the receive circuitry (magnetics, RX differential pairs, and MAC RX logic) physically absent or disabled at the board level
+This eliminates the possibility of NTP amplification abuse, remote management exploitation, packet injection, and all forms of inbound network attack. The appliance cannot be queried; it only announces. Clients on the local segment receive time broadcasts without issuing queries.
+
+5.4 Time Distribution Protocol
+NTPsec is the preferred distribution daemon, configured in broadcast-only mode on the local subnet. If NTPsec’s bidirectional socket infrastructure cannot be stripped to a transmit-only mode compatible with the hardware constraint, the daemon is replaced by a minimal custom broadcast engine implementing:
+RFC 5905 NTP packet format, Stratum 1, Reference ID set to GLON or ATOM
+UDP/123 broadcast or multicast to the local segment at 1–4 Hz
+No listener socket; the OS network stack is configured to drop all inbound UDP/123 frames at the kernel filter level (nftables/eBPF) as a software backstop behind the hardware enforcement
+This architecture mirrors the operational model of a local DNS resolver: clients consume the service without the server requiring inbound acknowledgment. Legacy NTP clients on the local segment receive valid Stratum-1 time without configuration changes.
+
+5.5 Physical Form Factor
+The CTS is packaged as a 1U or half-1U rack appliance or a DIN-rail industrial module. External interfaces are limited to:
+One RJ-45 or fiber Ethernet port (transmit-only, as described)
+One BNC connector for 10 MHz reference output
+One BNC connector for PPS output
+One IRIG-B output (optional)
+One SMA connector for GNSS antenna
+DC power input (12V or 48V); no management console port exposed externally
+
+6. Distinguishing Claims (Summary)
+The following features distinguish the CTS from prior art:
+Feature	Prior Art	CTS
+Network interface direction	Bidirectional	Transmit-only (hardware enforced)
+GNSS constellation	GPS primary	GLONASS primary; GPS-independent
+NTP query response	Required (RFC 5905 client mode)	None; broadcast-only
+Time source on GNSS loss	Degrades to upstream NTP	Atomic holdover
+Management attack surface	SSH / SNMP / web UI	None (no inbound path)
+Upstream dependency	Internet NTP servers	None; self-contained
+
+7. Security Model and Threat Analysis
+RF spoofing: GNSS anomaly detection triggers oscillator holdover. The atomic clock does not accept spoofed time; it rejects outlier discipline corrections beyond a configurable threshold (e.g., 1 μs/s slew rate limit).
+Network injection: Hardware-enforced one-way Ethernet eliminates all inbound attack vectors at the physical layer. Software firewall rules are a secondary backstop, not the primary control.
+Supply chain / firmware: The distribution daemon runs on a minimal RTOS with no network stack beyond the UDP broadcast socket. No remote update path exists.
+Jamming-induced drift: Atomic holdover maintains sub-microsecond accuracy for hours to days depending on oscillator grade, independent of GNSS availability.
+Protocol downgrade: No NTP client mode is implemented. The device cannot be induced to synchronize to an adversarial server.
+
+8. Relation to Inventor’s Prior Work
+This invention is architecturally consistent with the CTW-Unix-8 and DSL-S security philosophy: each subsystem boundary enforces one-way trust propagation with no bidirectional feedback path that an adversary can exploit. The hardware data diode on the Ethernet interface is the physical analog of the one-way serial bus between the CTW-Unix-8 authentication and execution processors. The GNSS isolation architecture derives from observed field evidence of coordinated GPS jamming and spoofing documented in the inventor’s RF forensic research (Band 71 TAC 65535, ghost eNB 44319, PRN 6/PRN 24 anomalies).
+The CTS may be integrated as the primary time reference for the CTW SENTINEL forensic platform, providing a tamper-evident, network-isolated time source whose chain of custody is enforced in hardware.
+
+9. Abstract
+A hardware appliance providing Stratum-0 network time service to a local Ethernet segment using an onboard atomic oscillator disciplined by a GLONASS receiver, distributed over a physically unidirectional (transmit-only) Ethernet interface with no inbound data path. The device operates without Internet connectivity, without NTP query-response protocol, and without any externally reachable management interface. GNSS signal anomalies trigger automatic atomic holdover. The architecture eliminates all known network-layer and RF-layer attack surfaces present in conventional GPS-disciplined NTP appliances.
+
+Inventor Signature: Christopher T. Williams
+Date: April 23, 2026
+Related Filing: USPTO 19/466,387
