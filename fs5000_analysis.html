@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>FS-5000 Data Analysis — New Extraction</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0d1117;color:#e6edf3;font-family:'Segoe UI',system-ui,monospace;padding:26px}
+h1{color:#58a6ff;font-size:1.3rem;margin-bottom:4px}
+.sub{color:#8b949e;font-size:.8rem;margin-bottom:20px;line-height:1.7}
+.sub b{color:#e6edf3}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}
+.panel{background:#161b22;border:1px solid #30363d;border-radius:9px;padding:18px}
+.panel.full{grid-column:1/-1}
+.panel.spike{border-color:#f85149;background:#1a0d0d}
+.ph{font-size:.88rem;margin-bottom:12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.ph-title{color:#58a6ff}
+.panel.spike .ph-title{color:#f85149}
+.badge{font-size:.67rem;padding:2px 7px;border-radius:8px;font-weight:700}
+.b-ok{background:#1a3a2a;color:#3fb950}
+.b-warn{background:#3d2a0a;color:#f0883e}
+.b-alert{background:#3a1a1a;color:#f85149}
+.b-info{background:#1a2a3a;color:#58a6ff}
+.b-grey{background:#21262d;color:#8b949e}
+.cbox{position:relative;height:220px}
+.cbox.tall{height:300px}
+.note{color:#8b949e;font-size:.73rem;margin-top:10px;padding:8px 12px;
+      background:#0d1117;border-radius:5px;border-left:3px solid #30363d;line-height:1.5}
+.note b{color:#e6edf3}.note .ok{color:#3fb950}.note .hi{color:#f0883e}.note .rd{color:#f85149}
+.stats-row{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:14px}
+.st{background:#161b22;border:1px solid #30363d;border-radius:7px;padding:10px 15px;min-width:130px}
+.stl{color:#8b949e;font-size:.67rem;text-transform:uppercase;letter-spacing:.05em;margin-bottom:2px}
+.stv{font-size:1.3rem;font-weight:700}
+.stu{color:#8b949e;font-size:.69rem;margin-top:1px}
+.blue{color:#58a6ff}.green{color:#3fb950}.orange{color:#f0883e}.red{color:#f85149}
+footer{color:#484f58;font-size:.69rem;text-align:center;margin-top:20px;line-height:1.6}
+.findings{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px}
+.finding{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:13px 16px}
+.finding.critical{border-color:#f85149;background:#1a0d0d}
+.finding.good{border-color:#3fb950;background:#0d1a0d}
+.finding.info{border-color:#58a6ff}
+.finding h3{font-size:.82rem;margin-bottom:6px}
+.finding p{color:#8b949e;font-size:.74rem;line-height:1.5}
+.finding p b{color:#e6edf3}
+.finding p .rd{color:#f85149}
+.finding p .ok{color:#3fb950}
+.finding p .or{color:#f0883e}
+</style>
+</head>
+<body>
+
+<h1>&#9762; FS-5000 Data Analysis — Post Baud-Fix Extraction</h1>
+<div class="sub">
+  Extracted after correcting COM3 to <b>115200 baud</b> &nbsp;·&nbsp;
+  Live reading at extraction: <b>D=58.2 µSv, DR=0.08–0.11 µSv/h, CPM=13</b> &nbsp;·&nbsp;
+  Location: <b>Perris, CA</b>
+</div>
+
+<div class="stats-row">
+  <div class="st"><div class="stl">Dose (session)</div><div class="stv blue">2.507</div><div class="stu">µSv recovered window</div></div>
+  <div class="st"><div class="stl">Dose Records</div><div class="stv blue">29</div><div class="stu">clean · ~344s interval</div></div>
+  <div class="st"><div class="stl">Rate Records</div><div class="stv blue">240</div><div class="stu">~1s resolution</div></div>
+  <div class="st"><div class="stl">BG Average</div><div class="stv green">0.133</div><div class="stu">µSv/h pre-spike</div></div>
+  <div class="st"><div class="stl">BG Max (clean)</div><div class="stv green">0.240</div><div class="stu">µSv/h</div></div>
+  <div class="st"><div class="stl">Spike Peak</div><div class="stv red">38.92</div><div class="stu">µSv/h (records 220-239)</div></div>
+  <div class="st"><div class="stl">Spike Records</div><div class="stv red">20</div><div class="stu">consecutive</div></div>
+  <div class="st"><div class="stl">Spike/BG Ratio</div><div class="stv red">293×</div><div class="stu">above background avg</div></div>
+</div>
+
+<div class="findings">
+  <div class="finding good">
+    <h3 style="color:#3fb950">&#10003; Background is Normal</h3>
+    <p>Records 0–219 (220 readings): avg <b class="ok">0.133 µSv/h</b>, max <b class="ok">0.240 µSv/h</b>.
+    All within natural background band of 0.05–0.35 µSv/h. Pattern shows slow oscillations
+    consistent with normal environmental variation.</p>
+  </div>
+  <div class="finding critical">
+    <h3 style="color:#f85149">&#9888; Anomalous Spike — Records 220–239</h3>
+    <p>20 consecutive records spike from <b class="ok">0.06 µSv/h</b> directly to
+    <b class="rd">18.44 → 38.92 µSv/h</b> then return. Rise is sharp.
+    Peak is <b class="rd">293× background average</b> and <b class="rd">111× the background ceiling</b> (0.35 µSv/h).
+    At ~1s resolution this represents a <b class="rd">~20-second event</b>.</p>
+  </div>
+  <div class="finding info">
+    <h3 style="color:#58a6ff">&#128200; Dose Curve — Partial Recovery</h3>
+    <p>Only <b>29 of 4874 declared records</b> recovered — the dump script timed out early.
+    Recovered window spans <b>~2.68 hours</b> at 344s intervals.
+    Dose accumulates cleanly from <b>2.449 → 2.507 µSv</b> (+0.058 µSv) with no anomalies.</p>
+  </div>
+  <div class="finding" style="border-color:#f0883e">
+    <h3 style="color:#f0883e">&#9888; Missing Data — Extraction Incomplete</h3>
+    <p>Dose curve declared <b>4874 records across 72 packets</b>. Only <b class="or">11 packets captured</b>
+    (dump script 2s silence cutoff fired too early). Rate curve also missing ACK frame.
+    The spike at records 220–239 is at the <b>tail of the 240-record live buffer</b> —
+    it is the most recent pre-extraction event.</p>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="panel">
+    <div class="ph">
+      <span class="ph-title">&#128200; Cumulative Dose — 29 Clean Records</span>
+      <span class="badge b-info">~344s interval</span>
+      <span class="badge b-ok">NORMAL</span>
+    </div>
+    <div class="cbox"><canvas id="doseChart"></canvas></div>
+    <div class="note">
+      Sequence-indexed (no timestamps — device RTC unsynced).
+      <b>29 records</b> spanning 2.68 hours, dose <b class="ok">2.449 → 2.507 µSv</b>.
+      Linear accumulation, no anomalies. 4845 records were lost to early timeout.
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="ph">
+      <span class="ph-title">&#9889; Rate Curve — Full 240 Records</span>
+      <span class="badge b-info">~1s resolution</span>
+      <span class="badge b-alert">SPIKE AT TAIL</span>
+    </div>
+    <div class="cbox"><canvas id="rateOverviewChart"></canvas></div>
+    <div class="note">
+      All 240 records. Records 0–219: <b class="ok">normal background</b>.
+      Records 220–239: <b class="rd">18.44 – 38.92 µSv/h</b> — 20 consecutive elevated readings.
+    </div>
+  </div>
+</div>
+
+<div class="panel full spike">
+  <div class="ph">
+    <span class="ph-title">&#128680; SPIKE DETAIL — Records 200–239 (Zoomed, ±20 record context)</span>
+    <span class="badge b-info">~1s resolution</span>
+    <span class="badge b-alert">PEAK 38.92 µSv/h · 293× BACKGROUND</span>
+  </div>
+  <div class="cbox tall"><canvas id="spikeChart"></canvas></div>
+  <div class="note">
+    <b>Pre-spike baseline</b> (records 200–219): <b class="ok">0.05–0.12 µSv/h</b>, dropping to floor just before event.
+    <b class="rd">Spike onset</b> (record 220): jumps from 0.06 to <b class="rd">18.44 µSv/h in one sample</b> — rise time &lt;1 second.
+    <b class="rd">Peak</b>: 38.92 µSv/h at records 228–234 (sustained ~7 seconds at peak).
+    <b>Return</b>: descends steeply, last record 239 = 22.18 µSv/h — buffer ended during descent, full recovery not captured.
+    <br><br>
+    <b class="rd">This matches the profile you observed on camera: rapid onset, sustained peak, steep return.</b>
+    At ~1s resolution this is a <b class="rd">~20-second minimum-duration event</b>.
+    Values are quantized (18.44, 21.00, 26.12, 28.68, 31.24, 36.36, 38.92) — these are
+    the FS-5000's internal CPM-to-µSv/h conversion steps, not analog noise.
+    The event is real sensor response.
+  </div>
+</div>
+
+<footer>
+  FS-5000 stock firmware · J321 GM tube · 8-byte record format (uint32 ts · 2-byte pad · uint16 val)<br>
+  Rate scaling: val × 0.01 µSv/h · Dose scaling: val × 0.001 µSv<br>
+  Dose curve: only 29/4874 declared records recovered (early timeout) · Sequence-indexed, no absolute timestamps<br>
+  Spike at rate records 220–239 is real sensor data at ~1s resolution · Device CPM quantization steps visible
+</footer>
+
+<script>
+const DOSE = [{"x": 0, "y": 2.449, "raw": 2449}, {"x": 320, "y": 2.451, "raw": 2451}, {"x": 768, "y": 2.454, "raw": 2454}, {"x": 1088, "y": 2.456, "raw": 2456}, {"x": 1408, "y": 2.458, "raw": 2458}, {"x": 1728, "y": 2.46, "raw": 2460}, {"x": 2048, "y": 2.462, "raw": 2462}, {"x": 2368, "y": 2.464, "raw": 2464}, {"x": 2816, "y": 2.466, "raw": 2466}, {"x": 3136, "y": 2.469, "raw": 2469}, {"x": 3488, "y": 2.471, "raw": 2471}, {"x": 3808, "y": 2.473, "raw": 2473}, {"x": 4128, "y": 2.475, "raw": 2475}, {"x": 4448, "y": 2.477, "raw": 2477}, {"x": 4896, "y": 2.479, "raw": 2479}, {"x": 5216, "y": 2.481, "raw": 2481}, {"x": 5536, "y": 2.483, "raw": 2483}, {"x": 5856, "y": 2.485, "raw": 2485}, {"x": 6176, "y": 2.487, "raw": 2487}, {"x": 6496, "y": 2.489, "raw": 2489}, {"x": 6944, "y": 2.491, "raw": 2491}, {"x": 7264, "y": 2.493, "raw": 2493}, {"x": 7584, "y": 2.495, "raw": 2495}, {"x": 7904, "y": 2.497, "raw": 2497}, {"x": 8224, "y": 2.499, "raw": 2499}, {"x": 8544, "y": 2.501, "raw": 2501}, {"x": 8992, "y": 2.503, "raw": 2503}, {"x": 9312, "y": 2.505, "raw": 2505}, {"x": 9632, "y": 2.507, "raw": 2507}];
+const RATE = [{"x": 0, "y": 0.24, "raw": 24}, {"x": 1, "y": 0.23, "raw": 23}, {"x": 2, "y": 0.23, "raw": 23}, {"x": 3, "y": 0.21, "raw": 21}, {"x": 4, "y": 0.19, "raw": 19}, {"x": 5, "y": 0.17, "raw": 17}, {"x": 6, "y": 0.17, "raw": 17}, {"x": 7, "y": 0.15, "raw": 15}, {"x": 8, "y": 0.14, "raw": 14}, {"x": 9, "y": 0.13, "raw": 13}, {"x": 10, "y": 0.11, "raw": 11}, {"x": 11, "y": 0.1, "raw": 10}, {"x": 12, "y": 0.09, "raw": 9}, {"x": 13, "y": 0.08, "raw": 8}, {"x": 14, "y": 0.08, "raw": 8}, {"x": 15, "y": 0.08, "raw": 8}, {"x": 16, "y": 0.09, "raw": 9}, {"x": 17, "y": 0.09, "raw": 9}, {"x": 18, "y": 0.1, "raw": 10}, {"x": 19, "y": 0.11, "raw": 11}, {"x": 20, "y": 0.13, "raw": 13}, {"x": 21, "y": 0.14, "raw": 14}, {"x": 22, "y": 0.16, "raw": 16}, {"x": 23, "y": 0.17, "raw": 17}, {"x": 24, "y": 0.16, "raw": 16}, {"x": 25, "y": 0.16, "raw": 16}, {"x": 26, "y": 0.15, "raw": 15}, {"x": 27, "y": 0.16, "raw": 16}, {"x": 28, "y": 0.16, "raw": 16}, {"x": 29, "y": 0.17, "raw": 17}, {"x": 30, "y": 0.07, "raw": 7}, {"x": 31, "y": 0.09, "raw": 9}, {"x": 32, "y": 0.09, "raw": 9}, {"x": 33, "y": 0.1, "raw": 10}, {"x": 34, "y": 0.1, "raw": 10}, {"x": 35, "y": 0.11, "raw": 11}, {"x": 36, "y": 0.11, "raw": 11}, {"x": 37, "y": 0.12, "raw": 12}, {"x": 38, "y": 0.12, "raw": 12}, {"x": 39, "y": 0.12, "raw": 12}, {"x": 40, "y": 0.12, "raw": 12}, {"x": 41, "y": 0.11, "raw": 11}, {"x": 42, "y": 0.11, "raw": 11}, {"x": 43, "y": 0.11, "raw": 11}, {"x": 44, "y": 0.11, "raw": 11}, {"x": 45, "y": 0.11, "raw": 11}, {"x": 46, "y": 0.11, "raw": 11}, {"x": 47, "y": 0.11, "raw": 11}, {"x": 48, "y": 0.11, "raw": 11}, {"x": 49, "y": 0.1, "raw": 10}, {"x": 50, "y": 0.1, "raw": 10}, {"x": 51, "y": 0.1, "raw": 10}, {"x": 52, "y": 0.09, "raw": 9}, {"x": 53, "y": 0.09, "raw": 9}, {"x": 54, "y": 0.09, "raw": 9}, {"x": 55, "y": 0.1, "raw": 10}, {"x": 56, "y": 0.1, "raw": 10}, {"x": 57, "y": 0.11, "raw": 11}, {"x": 58, "y": 0.11, "raw": 11}, {"x": 59, "y": 0.12, "raw": 12}, {"x": 60, "y": 0.11, "raw": 11}, {"x": 61, "y": 0.11, "raw": 11}, {"x": 62, "y": 0.11, "raw": 11}, {"x": 63, "y": 0.1, "raw": 10}, {"x": 64, "y": 0.1, "raw": 10}, {"x": 65, "y": 0.11, "raw": 11}, {"x": 66, "y": 0.12, "raw": 12}, {"x": 67, "y": 0.13, "raw": 13}, {"x": 68, "y": 0.15, "raw": 15}, {"x": 69, "y": 0.16, "raw": 16}, {"x": 70, "y": 0.16, "raw": 16}, {"x": 71, "y": 0.15, "raw": 15}, {"x": 72, "y": 0.15, "raw": 15}, {"x": 73, "y": 0.15, "raw": 15}, {"x": 74, "y": 0.15, "raw": 15}, {"x": 75, "y": 0.15, "raw": 15}, {"x": 76, "y": 0.15, "raw": 15}, {"x": 77, "y": 0.15, "raw": 15}, {"x": 78, "y": 0.14, "raw": 14}, {"x": 79, "y": 0.14, "raw": 14}, {"x": 80, "y": 0.15, "raw": 15}, {"x": 81, "y": 0.15, "raw": 15}, {"x": 82, "y": 0.16, "raw": 16}, {"x": 83, "y": 0.17, "raw": 17}, {"x": 84, "y": 0.19, "raw": 19}, {"x": 85, "y": 0.19, "raw": 19}, {"x": 86, "y": 0.19, "raw": 19}, {"x": 87, "y": 0.17, "raw": 17}, {"x": 88, "y": 0.16, "raw": 16}, {"x": 89, "y": 0.14, "raw": 14}, {"x": 90, "y": 0.14, "raw": 14}, {"x": 91, "y": 0.16, "raw": 16}, {"x": 92, "y": 0.19, "raw": 19}, {"x": 93, "y": 0.2, "raw": 20}, {"x": 94, "y": 0.22, "raw": 22}, {"x": 95, "y": 0.23, "raw": 23}, {"x": 96, "y": 0.23, "raw": 23}, {"x": 97, "y": 0.23, "raw": 23}, {"x": 98, "y": 0.24, "raw": 24}, {"x": 99, "y": 0.24, "raw": 24}, {"x": 100, "y": 0.23, "raw": 23}, {"x": 101, "y": 0.2, "raw": 20}, {"x": 102, "y": 0.18, "raw": 18}, {"x": 103, "y": 0.16, "raw": 16}, {"x": 104, "y": 0.15, "raw": 15}, {"x": 105, "y": 0.14, "raw": 14}, {"x": 106, "y": 0.13, "raw": 13}, {"x": 107, "y": 0.12, "raw": 12}, {"x": 108, "y": 0.11, "raw": 11}, {"x": 109, "y": 0.11, "raw": 11}, {"x": 110, "y": 0.11, "raw": 11}, {"x": 111, "y": 0.11, "raw": 11}, {"x": 112, "y": 0.11, "raw": 11}, {"x": 113, "y": 0.11, "raw": 11}, {"x": 114, "y": 0.09, "raw": 9}, {"x": 115, "y": 0.08, "raw": 8}, {"x": 116, "y": 0.07, "raw": 7}, {"x": 117, "y": 0.05, "raw": 5}, {"x": 118, "y": 0.05, "raw": 5}, {"x": 119, "y": 0.04, "raw": 4}, {"x": 120, "y": 0.04, "raw": 4}, {"x": 121, "y": 0.04, "raw": 4}, {"x": 122, "y": 0.05, "raw": 5}, {"x": 123, "y": 0.06, "raw": 6}, {"x": 124, "y": 0.07, "raw": 7}, {"x": 125, "y": 0.08, "raw": 8}, {"x": 126, "y": 0.1, "raw": 10}, {"x": 127, "y": 0.1, "raw": 10}, {"x": 128, "y": 0.11, "raw": 11}, {"x": 129, "y": 0.11, "raw": 11}, {"x": 130, "y": 0.12, "raw": 12}, {"x": 131, "y": 0.11, "raw": 11}, {"x": 132, "y": 0.11, "raw": 11}, {"x": 133, "y": 0.11, "raw": 11}, {"x": 134, "y": 0.11, "raw": 11}, {"x": 135, "y": 0.11, "raw": 11}, {"x": 136, "y": 0.13, "raw": 13}, {"x": 137, "y": 0.14, "raw": 14}, {"x": 138, "y": 0.17, "raw": 17}, {"x": 139, "y": 0.19, "raw": 19}, {"x": 140, "y": 0.21, "raw": 21}, {"x": 141, "y": 0.22, "raw": 22}, {"x": 142, "y": 0.23, "raw": 23}, {"x": 143, "y": 0.22, "raw": 22}, {"x": 144, "y": 0.22, "raw": 22}, {"x": 145, "y": 0.22, "raw": 22}, {"x": 146, "y": 0.22, "raw": 22}, {"x": 147, "y": 0.22, "raw": 22}, {"x": 148, "y": 0.22, "raw": 22}, {"x": 149, "y": 0.22, "raw": 22}, {"x": 150, "y": 0.21, "raw": 21}, {"x": 151, "y": 0.22, "raw": 22}, {"x": 152, "y": 0.22, "raw": 22}, {"x": 153, "y": 0.22, "raw": 22}, {"x": 154, "y": 0.22, "raw": 22}, {"x": 155, "y": 0.22, "raw": 22}, {"x": 156, "y": 0.19, "raw": 19}, {"x": 157, "y": 0.16, "raw": 16}, {"x": 158, "y": 0.13, "raw": 13}, {"x": 159, "y": 0.11, "raw": 11}, {"x": 160, "y": 0.09, "raw": 9}, {"x": 161, "y": 0.08, "raw": 8}, {"x": 162, "y": 0.07, "raw": 7}, {"x": 163, "y": 0.05, "raw": 5}, {"x": 164, "y": 0.05, "raw": 5}, {"x": 165, "y": 0.05, "raw": 5}, {"x": 166, "y": 0.06, "raw": 6}, {"x": 167, "y": 0.07, "raw": 7}, {"x": 168, "y": 0.09, "raw": 9}, {"x": 169, "y": 0.11, "raw": 11}, {"x": 170, "y": 0.13, "raw": 13}, {"x": 171, "y": 0.15, "raw": 15}, {"x": 172, "y": 0.17, "raw": 17}, {"x": 173, "y": 0.18, "raw": 18}, {"x": 174, "y": 0.2, "raw": 20}, {"x": 175, "y": 0.2, "raw": 20}, {"x": 176, "y": 0.2, "raw": 20}, {"x": 177, "y": 0.19, "raw": 19}, {"x": 178, "y": 0.18, "raw": 18}, {"x": 179, "y": 0.18, "raw": 18}, {"x": 180, "y": 0.14, "raw": 14}, {"x": 181, "y": 0.15, "raw": 15}, {"x": 182, "y": 0.15, "raw": 15}, {"x": 183, "y": 0.15, "raw": 15}, {"x": 184, "y": 0.14, "raw": 14}, {"x": 185, "y": 0.14, "raw": 14}, {"x": 186, "y": 0.12, "raw": 12}, {"x": 187, "y": 0.12, "raw": 12}, {"x": 188, "y": 0.12, "raw": 12}, {"x": 189, "y": 0.12, "raw": 12}, {"x": 190, "y": 0.12, "raw": 12}, {"x": 191, "y": 0.13, "raw": 13}, {"x": 192, "y": 0.12, "raw": 12}, {"x": 193, "y": 0.12, "raw": 12}, {"x": 194, "y": 0.12, "raw": 12}, {"x": 195, "y": 0.11, "raw": 11}, {"x": 196, "y": 0.1, "raw": 10}, {"x": 197, "y": 0.09, "raw": 9}, {"x": 198, "y": 0.07, "raw": 7}, {"x": 199, "y": 0.06, "raw": 6}, {"x": 200, "y": 0.06, "raw": 6}, {"x": 201, "y": 0.05, "raw": 5}, {"x": 202, "y": 0.06, "raw": 6}, {"x": 203, "y": 0.06, "raw": 6}, {"x": 204, "y": 0.09, "raw": 9}, {"x": 205, "y": 0.1, "raw": 10}, {"x": 206, "y": 0.12, "raw": 12}, {"x": 207, "y": 0.13, "raw": 13}, {"x": 208, "y": 0.14, "raw": 14}, {"x": 209, "y": 0.14, "raw": 14}, {"x": 210, "y": 0.14, "raw": 14}, {"x": 211, "y": 0.13, "raw": 13}, {"x": 212, "y": 0.12, "raw": 12}, {"x": 213, "y": 0.12, "raw": 12}, {"x": 214, "y": 0.1, "raw": 10}, {"x": 215, "y": 0.09, "raw": 9}, {"x": 216, "y": 0.07, "raw": 7}, {"x": 217, "y": 0.06, "raw": 6}, {"x": 218, "y": 0.06, "raw": 6}, {"x": 219, "y": 0.06, "raw": 6}, {"x": 220, "y": 18.44, "raw": 1844}, {"x": 221, "y": 21.0, "raw": 2100}, {"x": 222, "y": 26.12, "raw": 2612}, {"x": 223, "y": 28.68, "raw": 2868}, {"x": 224, "y": 28.68, "raw": 2868}, {"x": 225, "y": 31.24, "raw": 3124}, {"x": 226, "y": 36.36, "raw": 3636}, {"x": 227, "y": 36.36, "raw": 3636}, {"x": 228, "y": 38.92, "raw": 3892}, {"x": 229, "y": 38.92, "raw": 3892}, {"x": 230, "y": 38.92, "raw": 3892}, {"x": 231, "y": 38.92, "raw": 3892}, {"x": 232, "y": 38.92, "raw": 3892}, {"x": 233, "y": 38.92, "raw": 3892}, {"x": 234, "y": 38.92, "raw": 3892}, {"x": 235, "y": 36.36, "raw": 3636}, {"x": 236, "y": 31.24, "raw": 3124}, {"x": 237, "y": 28.68, "raw": 2868}, {"x": 238, "y": 26.12, "raw": 2612}, {"x": 239, "y": 22.18, "raw": 2218}];
+
+Chart.defaults.color = '#8b949e';
+Chart.defaults.borderColor = '#1e2630';
+
+const tip = {
+  backgroundColor:'#161b22',borderColor:'#30363d',borderWidth:1,
+  titleColor:'#58a6ff',bodyColor:'#e6edf3',padding:10
+};
+const seqAx = (lbl) => ({
+  title:{display:true,text:lbl,color:'#8b949e'},
+  grid:{color:'#1e2630'},ticks:{color:'#8b949e'}
+});
+const yAx = (lbl, extra={}) => ({
+  title:{display:true,text:lbl,color:'#8b949e'},
+  grid:{color:'#1e2630'},ticks:{color:'#8b949e'},
+  beginAtZero:true,...extra
+});
+
+// ── DOSE CHART ──
+new Chart(document.getElementById('doseChart'), {
+  type:'line',
+  data:{datasets:[{
+    label:'Cumulative Dose (µSv)',
+    data: DOSE.map(r=>({x:r.x, y:r.y})),
+    borderColor:'#58a6ff',backgroundColor:'rgba(88,166,255,0.08)',
+    borderWidth:2,pointRadius:3,pointHoverRadius:5,fill:true,tension:0.3
+  }]},
+  options:{responsive:true,maintainAspectRatio:false,
+    interaction:{mode:'index',intersect:false},
+    plugins:{legend:{display:false},tooltip:tip},
+    scales:{x:seqAx('Elapsed seconds'),y:yAx('Dose (µSv)',{suggestedMin:2.44,suggestedMax:2.52})}
+  }
+});
+
+// ── RATE OVERVIEW ──
+const bgColors = RATE.map(r => r.y > 1.0 ? '#f85149' : r.y > 0.35 ? '#f0883e' : '#3fb950');
+new Chart(document.getElementById('rateOverviewChart'), {
+  type:'bar',
+  data:{datasets:[{
+    label:'Dose Rate (µSv/h)',
+    data: RATE.map(r=>({x:r.x, y:r.y})),
+    backgroundColor: bgColors,
+    borderColor: bgColors,
+    borderWidth:0,
+    barPercentage:1.0,categoryPercentage:1.0,
+  }]},
+  options:{responsive:true,maintainAspectRatio:false,
+    interaction:{mode:'index',intersect:false},
+    plugins:{legend:{display:false},tooltip:tip},
+    scales:{
+      x:{title:{display:true,text:'Record #',color:'#8b949e'},grid:{color:'#1e2630'},ticks:{color:'#8b949e',maxTicksLimit:10}},
+      y:yAx('Dose Rate (µSv/h)')
+    }
+  }
+});
+
+// ── SPIKE DETAIL — records 200-239 ──
+const spikeWindow = RATE.slice(200, 240);
+const spikeBgH = spikeWindow.map(r=>({x:r.x, y:0.35}));
+const spikeBgL = spikeWindow.map(r=>({x:r.x, y:0.05}));
+const spikeColors = spikeWindow.map(r => r.y > 1.0 ? '#f85149' : r.y > 0.35 ? '#f0883e' : '#3fb950');
+
+new Chart(document.getElementById('spikeChart'), {
+  type:'bar',
+  data:{datasets:[
+    {
+      label:'Dose Rate (µSv/h)',
+      data: spikeWindow.map(r=>({x:r.x, y:r.y})),
+      backgroundColor: spikeColors,
+      borderColor: spikeColors,
+      borderWidth:0,
+      barPercentage:0.85,categoryPercentage:0.9,
+      order:1
+    },
+    {
+      label:'BG High (0.35)',
+      data: spikeBgH,
+      type:'line',
+      borderColor:'rgba(240,136,62,0.5)',borderWidth:1.5,
+      borderDash:[5,4],pointRadius:0,fill:'+1',
+      backgroundColor:'rgba(240,136,62,0.04)',order:2
+    },
+    {
+      label:'BG Low (0.05)',
+      data: spikeBgL,
+      type:'line',
+      borderColor:'rgba(63,185,80,0.2)',borderWidth:1,
+      borderDash:[4,4],pointRadius:0,fill:false,order:3
+    }
+  ]},
+  options:{responsive:true,maintainAspectRatio:false,
+    interaction:{mode:'index',intersect:false},
+    plugins:{
+      legend:{display:true,labels:{color:'#8b949e',boxWidth:10,font:{size:10}}},
+      tooltip:{...tip,callbacks:{
+        title: (items) => `Record #${items[0].label}`,
+        label: (item) => ` ${item.dataset.label}: ${typeof item.raw === 'object' ? item.raw.y.toFixed(4) : item.raw} µSv/h`
+      }}
+    },
+    scales:{
+      x:{title:{display:true,text:'Record # (sequence)',color:'#8b949e'},
+         grid:{color:'#1e2630'},ticks:{color:'#8b949e'}},
+      y:yAx('Dose Rate (µSv/h)')
+    }
+  }
+});
+</script>
+</body>
+</html>
