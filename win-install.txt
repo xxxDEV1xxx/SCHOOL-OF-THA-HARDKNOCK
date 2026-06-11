@@ -1,0 +1,59 @@
+CTW-11 GNSS MAPPER â€” Windows 11 Install Instructions
+Made by Christopher Williams
+â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+STEP-BY-STEP
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+1. Place these two files in the SAME folder:
+      ctw11_gnss_mapper_v2.c
+      Install-CTW11-Win11.ps1
+
+2. Open PowerShell as Administrator:
+      Start â†’ search "PowerShell" â†’ right-click â†’ Run as administrator
+
+3. Allow script execution (one-time):
+      Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
+
+4. Navigate to the folder:
+      cd "C:\path\to\your\folder"
+
+5. Run the installer:
+      .\Install-CTW11-Win11.ps1
+
+   The script will:
+     â€¢ Install MSYS2 via winget (or download if winget unavailable)
+     â€¢ Install MinGW-w64 GCC + GTK3 via pacman
+     â€¢ Compile the C source natively for Win64
+     â€¢ Bundle all required GTK DLLs (~40) into CTW11_GNSS_Mapper_Win64\
+     â€¢ Create  Launch_CTW11_Mapper.bat  in that folder
+     â€¢ Place a shortcut on your Desktop
+
+6. Launch:
+      Double-click "CTW-11 GNSS Mapper" on Desktop
+      â€” or â€”
+      Run  CTW11_GNSS_Mapper_Win64\Launch_CTW11_Mapper.bat
+
+TOTAL DISK USAGE:  ~600 MB (MSYS2 + toolchain + GTK runtime)
+INSTALL TIME:      5â€“15 minutes depending on internet speed
+
+IF WINGET IS NOT AVAILABLE
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+Download MSYS2 manually from https://www.msys2.org
+Install to  C:\msys64  (default), then re-run the script.
+
+IF THE SCRIPT IS BLOCKED
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+Run in PowerShell (Admin):
+  Set-ExecutionPolicy Bypass -Scope Process -Force
+  .\Install-CTW11-Win11.ps1
+
+MOVING THE PROGRAM
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+The CTW11_GNSS_Mapper_Win64\ folder is self-contained.
+You can move or copy it anywhere. Update the desktop
+shortcut target path if you move it.
+
+â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+CTW-11 GNSS COORDINATE MAPPER  â€”  Made by Christopher Williams
+â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
