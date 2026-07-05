@@ -1,0 +1,789 @@
+SYSTEM AND METHOD FOR KERNEL-ENFORCED LENGTH PROVENANCE
+AND OUT-OF-BOUNDS PREVENTION ACROSS CRYPTOGRAPHIC,
+MEMORY, AND I/O OPERATIONS
+
+A Technical Disclosure and Field Reference
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Inventor:  Christopher T. Williams
+
+Domain:    Operating System Security · Kernel Memory Safety ·
+           Cryptographic Integrity · I/O Boundary Enforcement
+Status:    Active — All Rights Reserved
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+PREAMBLE
+
+This document is the authoritative field reference for the
+OOB Guard invention. It serves simultaneously as:
+
+  — A technical disclosure for prior art and prosecution history
+  — An operational reference for implementations in any language
+    or execution environment
+  — A record of the core invariant that defines the invention
+
+The central invariant of this system is stated once here and
+applies without exception to every implementation derived from
+this disclosure:
+
+  NO CRYPTOGRAPHIC, MEMORY, OR I/O OPERATION MAY CONSUME
+  AN EXTERNALLY SUPPLIED LENGTH VALUE WITHOUT EXPLICIT
+  VALIDATION, DERIVATION, OR CLAMPING AGAINST AN INTERNALLY
+  DEFINED BOUND ESTABLISHED BEFORE THE OPERATION BEGINS.
+
+Everything else in this document is a consequence of that rule.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+I. THE PROBLEM THIS INVENTION SOLVES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Modern operating systems contain an architectural assumption
+so pervasive it is rarely stated explicitly:
+
+  Length values supplied by external sources — user space,
+  network packets, device firmware, hardware interfaces,
+  DMA engines, or inter-process communication — are treated
+  as trustworthy inputs to memory and cryptographic operations.
+
+This assumption is false. It has never been safe. And no
+mitigation deployed in any major operating system as of the
+filing date of this patent addresses it at the root.
+
+The consequences of this assumption include:
+
+  OUT-OF-BOUNDS READS
+  A length field in a network packet, device response, or
+  IPC message controls how many bytes are read from an
+  internal buffer. If that field is not validated against
+  the actual allocation, the read extends beyond the buffer.
+  The Heartbleed vulnerability (CVE-2014-0160) is the most
+  widely known example. It disclosed 64 kilobytes of process
+  memory per request for two years before detection.
+
+  OUT-OF-BOUNDS WRITES
+  A length field controls how many bytes are written into a
+  destination buffer. If the destination is smaller than the
+  specified length, the write corrupts adjacent memory. This
+  class includes stack overflows, heap overflows, and kernel
+  object corruption. It represents the plurality of all
+  privilege escalation vulnerabilities in the historical
+  CVE database.
+
+  CRYPTOGRAPHIC PARAMETER MISMATCHES
+  AEAD construction functions — AES-GCM, ChaCha20-Poly1305,
+  and similar — require that the ciphertext length provided
+  to the decryption function exactly matches the length of
+  the actual ciphertext, including the authentication tag.
+  When the length parameter is derived from an untrusted
+  source, the authentication check may be bypassed, truncated,
+  or applied to the wrong region. The cryptographic guarantee
+  of the construction is voided without raising an error.
+
+  DMA BOUNDARY VIOLATIONS
+  Direct Memory Access engines write to physical memory
+  regions described by length and address parameters in
+  descriptor rings. If those parameters originate from
+  device firmware or untrusted configuration, the DMA engine
+  can write to arbitrary physical memory, bypassing all
+  virtual memory protections. IOMMU restrictions are
+  insufficient when the length field itself is the attack
+  vector.
+
+  PRIVILEGE ESCALATION
+  Kernel subsystems that process device driver responses,
+  IOCTL parameters, or firmware-supplied buffers frequently
+  use externally provided lengths to determine copy
+  boundaries. A length value one byte beyond an allocation
+  boundary can overwrite a function pointer, a security
+  descriptor, or a capability mask in adjacent kernel memory.
+
+The existing mitigation landscape does not address this:
+
+  Stack canaries detect some sequential overwrites after
+  they occur. They do not prevent the overwrite.
+
+  ASLR randomizes addresses. It does not validate lengths.
+
+  SELinux enforces access policy on objects. It does not
+  inspect the length parameters of memory operations.
+
+  TPM attestation verifies boot state. It has no visibility
+  into runtime length values.
+
+  IOMMU restricts DMA to mapped regions. It does not validate
+  the length fields within DMA descriptors.
+
+The OOB Guard invention addresses the root cause that all
+of these mitigations leave untouched: the unvalidated length
+value that reaches a memory or cryptographic operation from
+an untrusted source.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+II. THE INVENTION — CORE ARCHITECTURE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The OOB Guard Module is a kernel-resident enforcement layer
+that intercepts length values at the boundary between their
+origin and their consumption.
+
+The module operates on three primitives:
+
+  PROVENANCE CLASSIFICATION
+  Every length value in the system is assigned a provenance
+  class at the point it enters a kernel-controlled path.
+  The classification is not advisory. It is a type attribute
+  that determines what operations may consume the value
+  without further validation.
+
+  BOUND DERIVATION
+  For each operation that consumes a length, the module
+  derives the maximum permissible bound from internal state
+  — the allocation size, the protocol specification, the
+  key schedule, or the hardware descriptor — independently
+  of the externally supplied value. This derivation is
+  performed once and stored in a protected region.
+
+  ENFORCEMENT POINT
+  Before any memory copy, cryptographic operation, or DMA
+  transfer executes, the module compares the externally
+  supplied length against the internally derived bound.
+  If the supplied value exceeds the bound, the operation
+  is rejected. The externally supplied value is never
+  consumed. The bound itself is the only input to the
+  operation.
+
+These three primitives together constitute a complete
+enforcement chain. No externally supplied length value
+reaches a sensitive operation without passing through
+all three stages.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+III. PROVENANCE CLASSIFICATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The invention defines four provenance classes. These are
+not trust levels in the conventional security sense. They
+are classifications of how a length value was produced
+and what degree of internal verification has been applied.
+
+  CLASS 0 — INTERNALLY DERIVED
+  The length value was computed entirely from internal
+  state by the kernel or a trusted module. No external
+  input contributed to its value. Examples: the size of
+  a kernel allocation returned by a verified allocator,
+  the length of a key derived by a KBKDF from a hardware
+  root key, the size of a descriptor computed from a
+  verified firmware image. Class 0 lengths may be consumed
+  directly by any operation.
+
+  CLASS 1 — INTERNALLY VALIDATED
+  The length value originated externally but has been
+  validated against an internally derived bound and found
+  within range. The validation has been recorded in the
+  audit log with a timestamp and operation identifier.
+  Class 1 lengths may be consumed by operations that
+  accept validated external input, provided the specific
+  operation was named in the validation record.
+
+  CLASS 2 — CLAMPED
+  The length value originated externally and has not been
+  individually validated. The module has replaced it with
+  the minimum of the supplied value and the internally
+  derived bound. The clamped value is safe for memory
+  operations. It is not safe for cryptographic operations
+  where the length must exactly match a protocol-specified
+  value, because clamping a cryptographic length silently
+  truncates authentication coverage. Class 2 lengths are
+  flagged in the audit log.
+
+  CLASS 3 — UNTRUSTED
+  The length value originated externally and has not been
+  validated or clamped. Class 3 lengths may not be consumed
+  by any memory, cryptographic, or I/O operation. Attempts
+  to use a Class 3 length in a sensitive operation produce
+  a violation event, reject the operation, and log a full
+  audit record. Class 3 is the default classification for
+  any length whose provenance cannot be established.
+
+The classification system has a deliberate asymmetry: it
+is always safe to classify a length at a lower trust level
+than its actual origin warrants. It is never safe to
+classify a length at a higher trust level than its origin
+warrants. The module enforces this asymmetry by defaulting
+to Class 3 for all unclassified lengths.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+IV. ENFORCEMENT DOMAINS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The OOB Guard Module enforces length provenance across
+five distinct operational domains. Each domain has
+properties that make naive enforcement insufficient and
+require domain-specific handling.
+
+DOMAIN 1 — MEMORY OPERATIONS
+
+  Covered operations: memcpy, memmove, memset, bcopy,
+  copy_from_user, copy_to_user, and their kernel-internal
+  equivalents.
+
+  The enforcement rule for memory operations permits
+  Class 2 (clamped) lengths because the consequence of
+  clamping is truncation of the copy, which is recoverable
+  and auditable. The operation must still be logged when
+  clamping occurs, because truncation of a copy may
+  indicate a protocol violation or an attack.
+
+  The specific bound used for memory operations is the
+  lesser of: the size of the destination allocation, the
+  size of the source allocation, and the protocol-specified
+  maximum for this message type. All three values must be
+  internally derived. The operation executes using the
+  minimum of these three values, regardless of what
+  external input supplied.
+
+DOMAIN 2 — CRYPTOGRAPHIC OPERATIONS
+
+  Covered operations: all AEAD encrypt and decrypt calls,
+  HMAC computation and verification, key derivation
+  functions, and digital signature operations.
+
+  Cryptographic operations require Class 0 or Class 1
+  lengths. Class 2 (clamped) lengths are rejected for
+  cryptographic operations because clamping a ciphertext
+  length silently removes bytes from the authentication
+  tag, voiding the authentication guarantee without
+  producing an error. A truncated AEAD authentication is
+  cryptographically indistinguishable from no
+  authentication at the application layer.
+
+  For AEAD operations specifically, the module enforces
+  a three-way consistency check:
+
+    — The length of the plaintext or ciphertext buffer
+      as reported by the allocator.
+    — The length field in the cipher operation descriptor.
+    — The length implied by the nonce, associated data,
+      and protocol specification for this message type.
+
+  All three must agree within the tolerance specified by
+  the cipher construction. Disagreement among any two
+  of the three values produces a violation event and
+  the operation is rejected without execution.
+
+DOMAIN 3 — DMA AND IOMMU OPERATIONS
+
+  Covered operations: DMA descriptor submission, scatter-
+  gather list construction, IOMMU mapping requests, and
+  device ring buffer management.
+
+  DMA operations require Class 0 lengths. The physical
+  memory regions named in DMA descriptors must be derived
+  entirely from internally managed allocation records.
+  Length values from device firmware, PCIe configuration
+  space, or ring buffer entries are Class 3 by default
+  and must be explicitly promoted to Class 0 through
+  a validation sequence that compares them against the
+  kernel's internal allocation map before the descriptor
+  is submitted to hardware.
+
+  The IOMMU mapping for a DMA transfer is derived from
+  the Class 0 bound, not from the device-supplied length.
+  This ensures that even if a compromised device supplies
+  an inflated length in its descriptor, the IOMMU mapping
+  constrains the actual hardware transfer to the
+  legitimate allocation.
+
+DOMAIN 4 — DRIVER AND IOCTL INTERFACES
+
+  Covered operations: ioctl parameter processing, driver
+  read and write operations, character device interface
+  handling, and kernel module parameter ingestion.
+
+  All length values arriving through ioctl or driver
+  interfaces are Class 3 by default. The driver is
+  responsible for promoting them to Class 1 through
+  the module's validation API before using them to
+  control any memory or cryptographic operation.
+
+  The validation API requires the driver to supply:
+  the externally supplied length, the name of the
+  operation for which it will be used, and the
+  internally derived maximum bound for that operation.
+  The module records all three in the audit log and
+  returns the validated length if the supplied value
+  is within bound, or rejects the operation if not.
+
+DOMAIN 5 — NETWORK AND IPC PACKET PROCESSING
+
+  Covered operations: network buffer processing, socket
+  receive path, IPC message dispatch, and inter-VM
+  communication channel ingestion.
+
+  Length values in packet headers, message envelopes,
+  and IPC descriptors are Class 3. The network stack
+  must derive the actual permissible length from the
+  socket receive buffer allocation and the protocol
+  specification for the message type, then use that
+  internally derived value as the bound against which
+  the packet-supplied length is checked.
+
+  For protocols with variable-length fields (TLS record
+  layer, QUIC frame headers, SCTP chunk lengths), the
+  module provides a protocol-aware validation function
+  that incorporates the protocol's own length constraints
+  as a secondary bound in addition to the allocation bound.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+V. AUDIT AND VIOLATION LOGGING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Every interaction with the OOB Guard Module produces an
+audit record. The audit log is append-only, stored in a
+kernel-protected memory region, and periodically flushed
+to a write-once storage backend. The log cannot be
+modified by any process operating at privilege levels
+below the OOB Guard Module itself.
+
+Each audit record contains:
+
+  — Monotonic timestamp at nanosecond resolution
+  — Operation identifier (the specific function being
+    guarded, as a string constant from the kernel image)
+  — Provenance class of the length value
+  — Supplied length (the externally presented value)
+  — Bound (the internally derived maximum)
+  — Outcome (PERMITTED / CLAMPED / REJECTED)
+  — Calling context (kernel call stack hash, truncated
+    to 64 bits, sufficient for correlation without full
+    stack disclosure)
+  — Verdict reason code
+
+For REJECTED outcomes, the record also contains:
+
+  — Full kernel call stack (protected, accessible only
+    to audit consumers with appropriate clearance)
+  — The domain (MEMORY / CRYPTO / DMA / DRIVER / NETWORK)
+  — Whether the violation matches a known attack pattern
+    from the module's violation signature database
+
+The violation signature database is updateable through
+a signed module interface. Signatures describe patterns
+of repeated violations, cross-domain correlated violations
+(a network packet length that, after rejection in the
+network domain, appears in a subsequent IOCTL call with
+identical characteristics), and temporal clustering that
+suggests automated exploitation attempts rather than
+software bugs.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+VI. THE CRYPTOGRAPHIC REPLACEMENT MAC ARCHITECTURE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The OOB Guard invention was developed in parallel with
+the Cryptographic Replacement MAC (DSL-S) architecture,
+also invented by Christopher T. Williams, filed under
+USPTO 19/466,387.
+
+These two inventions share a foundational principle:
+trust in a communication or computation must be
+established before the computation occurs, not inferred
+from the absence of an error after it completes.
+
+In the DSL-S architecture, the MAC layer does not trust
+frame length fields from the network medium. It derives
+the permissible frame length from the key schedule and
+the authenticated session parameters, then validates
+the received length against that internally derived bound
+before the frame is processed. This is OOB Guard
+enforcement applied at the MAC layer.
+
+The DSL-S architecture operates in the 902-928 MHz ISM
+band using Zadoff-Chu spreading sequences, BLAKE3 key
+derivation, AES-GCM-SIV session encryption, and a
+keyless ratchet cipher for forward secrecy. Each of
+these components enforces length provenance at its
+boundary. The BLAKE3 KDF produces key material of
+exactly the length specified by the internal key
+schedule, never by external request. The AES-GCM-SIV
+nonce and ciphertext lengths are derived from the
+session parameters, never from the ciphertext itself.
+
+The OOB Guard Module and the DSL-S architecture together
+demonstrate that length provenance enforcement is not a
+patch applied to a broken system — it is an architectural
+principle that, when applied consistently, eliminates the
+entire class of vulnerabilities that depend on the
+consumption of unvalidated external length values.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+VII. IMPLEMENTATION LINEAGE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The OOB Guard principle has been implemented across
+multiple systems designed or documented by the inventor.
+The following implementations are identified as prior
+embodiments consistent with the claims of this patent.
+
+  CTW SOCIAL PLATFORM (oob_guard.py)
+  The CTW Social platform, deployed at advancedctresearch.com,
+  contains a module (oob_guard.py) that constitutes the
+  live reference implementation of Claims 1 through 6.
+
+  The module defines explicit named bounds for every
+  external input the platform processes:
+
+    WS_MESSAGE:        65,536 bytes
+    POST_CONTENT:         500 bytes
+    DM_PLAINTEXT:      10,000 bytes
+    DM_PASSPHRASE:        500 bytes
+    DISPLAY_NAME:          50 bytes
+    BIO:                  200 bytes
+    SEARCH_QUERY:         256 bytes
+    CHESS_FEN:            128 bytes
+    CHESS_MOVE_UCI:         5 bytes
+    ENGINE_RESP_BYTES:   4,096 bytes
+    LINKIFY_INPUT:       2,000 bytes
+
+  Every external input to the platform passes through
+  a guard function before it reaches any processing
+  path. Guard functions raise OOBViolation exceptions
+  when the input exceeds its bound. Violations are
+  logged with source identification and value context.
+  A self-check routine runs at module initialization
+  and verifies that the guard functions correctly
+  reject values that exceed their bounds and correctly
+  pass values that do not. The self-check is a
+  precondition for platform startup.
+
+  The client-side enforcement mirrors the server-side
+  enforcement. The OOB object in the browser JavaScript
+  applies the same named bounds to the same categories
+  of input before any fetch, WebSocket send, or DOM
+  insertion. The WebSocket receive handler rejects
+  messages exceeding 65,536 bytes before parsing.
+  The post submission handler rejects content exceeding
+  500 bytes before the fetch. Neither the server nor
+  the client trusts the other's length enforcement —
+  both enforce independently at their own boundary.
+
+  CTW-BSC CIPHER ENGINE
+  The CTW-BSC zero-knowledge DM encryption system
+  enforces length provenance at every cryptographic
+  boundary. The PBKDF2 key derivation produces exactly
+  68 bytes regardless of the passphrase length — the
+  key length is internally specified, not externally
+  requested. The AES-GCM-SIV nonce is exactly 12 bytes,
+  generated from os.urandom(), not from any external
+  parameter. The ciphertext length fed to the
+  authentication verification is the length of the
+  received blob minus the nonce length — an internally
+  computed value, not the length field from the
+  ciphertext envelope.
+
+  The OOB guard on the ciphertext input (200,000 bytes
+  maximum) ensures that even a maximally malformed
+  ciphertext cannot consume unbounded server resources
+  before the authentication check rejects it.
+
+  GNSS EVIDENCE SCANNER
+  The GNSS scanner enforces length provenance on all
+  file inputs. The NMEA file upload is rejected before
+  parsing if it exceeds 20 megabytes. The points.csv
+  upload is rejected before parsing if it exceeds
+  10 megabytes. These bounds are derived from the
+  maximum plausible size of a legitimate GNSS session
+  log, not from the upload itself.
+
+  FS-5000 FORENSIC LOGGER
+  The serial log JSONL/gz files produced by fs5000_dual.py
+  enforce length provenance through GzipLog, which
+  appends only complete records. The SSE bridge
+  (log_bridge.py) reads the entire compressed file on
+  each poll cycle and yields only records that
+  successfully deserialize — malformed or truncated
+  records are silently discarded rather than partially
+  processed. The browser SSE consumer applies a
+  BigInt conversion to the wall_ns timestamp field
+  to prevent IEEE-754 precision loss from corrupting
+  nanosecond timing — a length provenance enforcement
+  applied to numeric precision rather than byte count.
+
+  PSN (PACIFIED STRING NOTATION)
+  PSN was developed by the inventor following the
+  observation of a live RTLO Unicode exploit firing
+  within a language model response during a security
+  research session. The notation encodes dangerous
+  strings as hex references in the format:
+
+    PSN1:<type>:<hex>:<description>:<risk_class>
+
+  This is length provenance enforcement applied to
+  string encoding: the dangerous string never appears
+  in executable form, only as a fixed-length hex
+  representation with a declared risk classification.
+  The consumer of a PSN record derives the actual
+  string from the hex only after validating the
+  risk_class against the consumer's own policy —
+  an externally supplied string never reaches
+  interpretation without passing through internal
+  policy enforcement first.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+VIII. CLAIMS SUMMARY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The following is a plain-language summary of the claims
+as filed under USPTO 19/466,387. It is not a substitute
+for the filed claims and is provided here for technical
+orientation only.
+
+  CLAIM 1 — LENGTH PROVENANCE CLASSIFICATION
+  A computer-implemented method for classifying length
+  values by provenance, comprising: receiving a length
+  value and its origin designation; assigning a
+  provenance class from a defined set of classes based
+  on the origin; storing the class assignment in a
+  protected kernel data structure; and making the class
+  assignment available to enforcement functions before
+  the length value is consumed by any memory,
+  cryptographic, or I/O operation.
+
+  CLAIM 2 — KERNEL-ENFORCED BOUND DERIVATION
+  A system for deriving permissible length bounds
+  independently of externally supplied values, comprising:
+  a kernel module that computes the maximum permissible
+  length for a named operation from internal allocation
+  records, protocol specifications, and key schedules;
+  stores the derived bound in a protected region; and
+  supplies the bound to enforcement points rather than
+  the externally supplied value.
+
+  CLAIM 3 — CRYPTOGRAPHIC LENGTH CONSISTENCY
+  A method for enforcing three-way length consistency
+  in AEAD operations, comprising: computing the expected
+  ciphertext length from the key schedule and protocol
+  specification; comparing the expected length against
+  the allocator-reported buffer length; comparing both
+  against the length field in the cipher operation
+  descriptor; and rejecting the operation if any two
+  of the three values disagree beyond construction-
+  specified tolerance.
+
+  CLAIM 4 — DMA BOUNDARY ENFORCEMENT
+  A system for constraining DMA transfers to internally
+  validated memory regions, comprising: maintaining a
+  kernel-managed map of valid DMA target allocations;
+  deriving DMA descriptor length fields from this map
+  rather than from device-supplied values; configuring
+  IOMMU mappings from the internally derived lengths;
+  and rejecting device-supplied descriptor lengths that
+  exceed the mapped allocation bounds before descriptor
+  submission to hardware.
+
+  CLAIM 5 — AUDIT-GRADE VIOLATION LOGGING
+  A method for producing tamper-evident records of
+  length provenance enforcement decisions, comprising:
+  writing to an append-only log for every enforcement
+  decision; including in each record the supplied length,
+  the derived bound, the provenance class, and the
+  enforcement outcome; storing the log in a kernel-
+  protected memory region; and flushing to write-once
+  storage on a schedule that prevents retrospective
+  modification.
+
+  CLAIM 6 — SIGNED MODULE INTEGRATION
+  A system for extending length provenance enforcement
+  to third-party kernel modules and device drivers,
+  comprising: a signed interface through which modules
+  declare the bounds applicable to their external inputs;
+  a validation function that modules invoke to promote
+  external length values to Class 1 before use; and
+  an enforcement mechanism that rejects any memory or
+  cryptographic operation within a registered module
+  that uses a Class 3 length value.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+IX. RELATIONSHIP TO PRIOR ART
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The OOB Guard invention is distinguished from prior art
+on the following grounds.
+
+  VERSUS BOUNDS CHECKING COMPILERS (SoftBound, CHERI)
+  Compiler-based bounds checking instruments pointer
+  arithmetic at compilation time and detects violations
+  at runtime. It requires source code recompilation and
+  does not operate on binary-only modules. The OOB Guard
+  invention operates at the kernel system call and
+  driver interface layer, requires no source access to
+  the guarded subsystem, and enforces provenance
+  classification rather than pointer arithmetic validity.
+  The two approaches address different threat models and
+  are complementary.
+
+  VERSUS MEMORY TAGGING (ARM MTE, SPARC ADI)
+  Memory tagging associates a tag with each memory
+  allocation and verifies that pointer tags match
+  allocation tags on access. It detects use-after-free
+  and some heap overflow conditions. It does not classify
+  length values by provenance and does not prevent
+  an allocation-valid pointer from being used to copy
+  an externally specified number of bytes that exceeds
+  the intended operation size. The OOB Guard invention
+  operates on the length parameter, not on the pointer.
+
+  VERSUS ADDRESS SPACE LAYOUT RANDOMIZATION
+  ASLR randomizes the base addresses of memory regions.
+  It does not validate the length values used to copy
+  data into those regions. An attacker who knows the
+  length relationship between two adjacent allocations
+  can overflow one into the other regardless of their
+  addresses.
+
+  VERSUS IOMMU ISOLATION
+  IOMMU isolation restricts DMA operations to pre-
+  mapped physical memory regions. When the attack vector
+  is a length field within a DMA descriptor that causes
+  the DMA engine to write beyond its intended region
+  within the mapped range, IOMMU isolation provides
+  no protection. The OOB Guard invention validates the
+  length fields in DMA descriptors against internally
+  derived bounds before the descriptor is submitted,
+  preventing this class of attack within the mapped
+  region.
+
+  VERSUS INPUT VALIDATION FRAMEWORKS
+  Application-layer input validation frameworks (JSON
+  schema validators, protocol buffer length constraints,
+  ORM field length limits) operate above the kernel
+  and do not protect kernel operations. They are
+  bypassable by direct system calls. The OOB Guard
+  invention operates at the kernel level and cannot
+  be bypassed by application-layer attack.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+X. OPERATIONAL GUIDANCE FOR IMPLEMENTERS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+This section provides guidance for engineers implementing
+the OOB Guard principle in any language or environment.
+It is not a specification — the specification is the
+patent filing. It is a set of heuristics derived from
+the inventor's experience implementing this principle
+across multiple systems.
+
+  DEFINE BOUNDS BEFORE READING INPUTS
+  The bound for every external input must be defined
+  in source code, as a named constant, before the
+  input is read. If you cannot name the bound before
+  you read the value, you do not yet understand the
+  operation well enough to implement it safely.
+
+  BOUNDS ARE NOT LIMITS — THEY ARE SPECIFICATIONS
+  A bound is not a maximum that the system will tolerate.
+  It is a specification of what the operation is designed
+  to handle. Inputs that exceed the bound are not merely
+  large — they are malformed with respect to the
+  operation's specification. Reject them, do not truncate
+  them silently.
+
+  CRYPTOGRAPHIC LENGTHS ARE NOT CLAMPABLE
+  If a length value controls how many bytes are
+  authenticated by a MAC or AEAD construction, clamping
+  it is not a safe fallback. A clamped authentication
+  covers fewer bytes than the protocol specifies. The
+  authentication may succeed on the clamped portion
+  while the uncovered portion contains malicious content.
+  Reject, do not clamp, for any length that controls
+  the extent of a cryptographic operation.
+
+  ENFORCE AT BOTH ENDS
+  If a system has both a client and a server, both must
+  enforce provenance independently. The server must not
+  trust that the client has enforced its bounds. The
+  client must not trust that the server will catch
+  violations the client failed to prevent. Each boundary
+  is an independent enforcement point.
+
+  LOG EVERY VIOLATION — INCLUDING PERMITTED CLAMPING
+  A clamped input is an anomaly. A rejected input is
+  a potential attack. Both must be logged with enough
+  context to reconstruct what happened. An audit log
+  that records only rejections cannot detect an
+  attacker who has learned to stay within bounds.
+
+  SELF-TEST AT INITIALIZATION
+  Every implementation of OOB Guard enforcement must
+  include a self-test that runs before the system
+  accepts any external input. The self-test must verify
+  that values exceeding the bounds are rejected and
+  that values within the bounds are accepted. A system
+  that cannot verify its own enforcement before startup
+  cannot be trusted to enforce anything after startup.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+XI. STATEMENT OF INVENTION AND PRIORITY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+This invention was conceived and reduced to practice by
+Christopher T. Williams, operating as an independent
+inventor and security researcher in Perris, California.
+
+The invention was conceived from first principles
+following the inventor's observation that all major
+classes of memory safety vulnerability share a single
+root cause: the consumption of an externally supplied
+length value by an operation that did not independently
+derive what that length should be.
+
+The invention was reduced to practice through:
+
+  — The oob_guard.py module deployed in production
+    on the CTW Social platform
+
+  — The client-side OOB enforcement object deployed
+    in the CTW Social index.html
+
+  — The CTW-BSC cipher engine, which applies length
+    provenance enforcement to every cryptographic
+    boundary in its implementation
+
+  — The FS-5000 forensic logging system, which applies
+    length provenance enforcement to serial, audio, and
+    SSE data streams
+
+  — The GNSS evidence scanner, which applies length
+    provenance enforcement to all file upload paths
+
+All implementations predate this filing and establish
+the inventor's priority over the claimed methods.
+
+The inventor asserts all rights under 35 U.S.C. § 101,
+§ 102, and § 103. No license, express or implied, is
+granted by this disclosure.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Christopher T. Williams
+Independent Inventor
+Perris, California
+USPTO Patent Application 19/466,387
+
+"The most dangerous trust in computing is the trust
+ that a length is what it claims to be."
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
